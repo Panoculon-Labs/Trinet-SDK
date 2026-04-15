@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Trinet camera UVC variants -->
+    <usb-device vendor-id="8711" product-id="22" />
+    <usb-device vendor-id="8711" product-id="24" />
+    <usb-device vendor-id="8711" product-id="26" />
+</resources>

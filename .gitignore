@@ -1,0 +1,16 @@
+.gradle/
+build/
+local.properties
+.idea/
+.cxx/
+.kotlin/
+*.iml
+captures/
+.externalNativeBuild/
+
+# Native dependencies fetched by scripts/build_native.sh
+trinet-sdk/src/main/jniLibs/*/lib*.so
+trinet-sdk/src/main/cpp/third_party/
+
+# Keep the directory structure
+!trinet-sdk/src/main/jniLibs/.gitkeep
