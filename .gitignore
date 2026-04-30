@@ -14,3 +14,4 @@ trinet-sdk/src/main/cpp/third_party/
 
 # Keep the directory structure
 !trinet-sdk/src/main/jniLibs/.gitkeep
+releases/
