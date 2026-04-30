@@ -36,9 +36,12 @@ struct Session {
     uvc_device_handle_t*   uvc_dev = nullptr;
     uvc_stream_ctrl_t      stream_ctrl{};
     std::atomic<bool>      streaming{false};
-    // First-frame CLOCK_MONOTONIC timestamp in µs. Each stream start resets it
-    // so PTS restarts at 0 per session.
-    std::atomic<int64_t>   pts_epoch_us{0};
+    // PTS scheme: frame_index × (1e6 / target_fps). Camera is locked to a
+    // fixed fps by the firmware, so this gives perfectly even spacing
+    // independent of when bursts of buffered frames arrive at the host.
+    // Both fields reset on every stream start.
+    int                    target_fps = 30;
+    std::atomic<uint64_t>  frame_count{0};
 };
 
 JNIEnv* attach_env(bool* attached) {
@@ -92,21 +95,16 @@ void on_frame_callback(uvc_frame_t* frame, void* user_ptr) {
     }
     env->SetByteArrayRegion(arr, 0, static_cast<jsize>(frame->data_bytes),
                             reinterpret_cast<const jbyte*>(frame->data));
-    // libuvc on Android does not populate frame->capture_time (observed:
-    // tv_sec=tv_usec=0 for every frame). That caused MediaMuxer to see PTS=0
-    // for every sample and emit an MP4 with a bogus ~10000 fps header. We
-    // stamp each frame ourselves with CLOCK_MONOTONIC µs, normalised against
-    // the first frame of *this session* so PTS restarts at 0 per recording.
-    struct timespec tsn{};
-    clock_gettime(CLOCK_MONOTONIC, &tsn);
-    int64_t now_us = static_cast<int64_t>(tsn.tv_sec) * 1000000LL
-                   + static_cast<int64_t>(tsn.tv_nsec) / 1000LL;
-    int64_t epoch = sess->pts_epoch_us.load(std::memory_order_relaxed);
-    if (epoch == 0) {
-        sess->pts_epoch_us.compare_exchange_strong(epoch, now_us);
-        epoch = sess->pts_epoch_us.load(std::memory_order_relaxed);
-    }
-    jlong pts_us = static_cast<jlong>(now_us - epoch);
+    // PTS = frame_index × (1e6 / fps). Wall-clock stamping (CLOCK_MONOTONIC)
+    // gave the first ~9 frames pts_us≈0 because USB bulk pre-fills its queue
+    // and the host callback drains them all in <1 µs. The muxer then piled
+    // them at t=0 and the first second of every recording looked corrupted.
+    // The camera firmware locks to a fixed fps, so a frame counter is the
+    // right clock here — perfectly even cadence regardless of host bursting.
+    uint64_t idx = sess->frame_count.fetch_add(1, std::memory_order_relaxed);
+    int fps = sess->target_fps > 0 ? sess->target_fps : 30;
+    jlong pts_us = static_cast<jlong>((idx * 1000000ULL) /
+                                      static_cast<uint64_t>(fps));
     env->CallStaticVoidMethod(g_bridge_class, g_on_frame, arr, pts_us);
     if (env->ExceptionCheck()) env->ExceptionClear();
     env->DeleteLocalRef(arr);
@@ -206,7 +204,8 @@ Java_com_panoculon_trinet_sdk_transport_NativeBridge_nativeStartStream(
          sess->stream_ctrl.dwMaxVideoFrameSize);
 
     sess->streaming.store(true, std::memory_order_relaxed);
-    sess->pts_epoch_us.store(0, std::memory_order_relaxed);  // restart PTS at 0
+    sess->target_fps = fps > 0 ? fps : 30;
+    sess->frame_count.store(0, std::memory_order_relaxed);  // restart PTS at 0
     rc = uvc_start_streaming(sess->uvc_dev, &sess->stream_ctrl, on_frame_callback, sess, 0);
     if (rc != UVC_SUCCESS) {
         sess->streaming.store(false);
