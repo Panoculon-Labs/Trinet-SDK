@@ -61,12 +61,17 @@ class TrinetRecorder(
         mp4 = Mp4Writer(File(dir, "video.mp4"), width, height, fps)
         // ImuFileWriter writes its header on the first sample (so accelFs/gyroFs reflect
         // what the device actually announced via SEI).
+        // device.serial is the 32-char hex device_id from USB iSerialNumber. Decode
+        // to 16 raw bytes for the .imu header reserved region; null when the camera
+        // didn't advertise one (pre-v4 firmware) so the writer leaves zeros.
+        val deviceIdBytes = device.serial?.let(::decodeDeviceIdHex)
         imu = ImuFileWriter(
             file = File(dir, "imu.bin"),
             sampleRateHz = sampleRateHz,
             accelFs = accelFsDefault,
             gyroFs = gyroFsDefault,
             flagsFsync = true,
+            deviceId = deviceIdBytes,
         )
         vts = VtsFileWriter(File(dir, "frames.bin"), fps.toFloat())
 
@@ -132,6 +137,25 @@ class TrinetRecorder(
     /** Timestamp-to-SoF conversion baked into the Trinet wire contract. */
     private fun deriveSofNs(s: ImuSample): Long =
         s.timestampNs - (s.fsyncDelayUs * 1_000f).toLong()
+
+    /**
+     * Decode a 32-char lowercase-hex device_id (the USB iSerialNumber the
+     * Trinet camera advertises in v4+ firmware) into the 16 raw bytes that
+     * go into the .imu header. Returns null on any malformation so the
+     * recorder gracefully degrades to "no device id in header" instead of
+     * crashing the recording.
+     */
+    private fun decodeDeviceIdHex(hex: String): ByteArray? {
+        if (hex.length != 32) return null
+        val out = ByteArray(16)
+        for (i in 0 until 16) {
+            val hi = Character.digit(hex[i * 2], 16)
+            val lo = Character.digit(hex[i * 2 + 1], 16)
+            if (hi < 0 || lo < 0) return null
+            out[i] = ((hi shl 4) or lo).toByte()
+        }
+        return out
+    }
 
     @Synchronized
     private fun stopInternal() {

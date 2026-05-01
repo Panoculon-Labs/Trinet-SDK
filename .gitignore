@@ -15,3 +15,10 @@ trinet-sdk/src/main/cpp/third_party/
 # Keep the directory structure
 !trinet-sdk/src/main/jniLibs/.gitkeep
 releases/
+
+# Release signing keystore. The .jks must NOT enter git — it is the signing
+# identity for every distributed APK and a leak means anyone can ship a
+# silent-update under our name. Backup separately (1Password / cold storage).
+# See keystore/README.md.
+keystore/*.jks
+keystore/*.keystore

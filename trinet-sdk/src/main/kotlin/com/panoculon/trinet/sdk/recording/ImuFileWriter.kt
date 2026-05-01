@@ -19,6 +19,13 @@ class ImuFileWriter(
     private val accelFs: Int,
     private val gyroFs: Int,
     flagsFsync: Boolean = true,
+    /**
+     * 16-byte public per-unit device ID. Lives in the first 16 bytes of the
+     * header reserved region (matches v4 firmware's on-device .imu writer
+     * and Trinet-Tools' reader). All-zero / null means "unknown" — readers
+     * surface this as a pre-v4 recording.
+     */
+    private val deviceId: ByteArray? = null,
     private val batchSize: Int = 64,
 ) : Closeable {
 
@@ -27,6 +34,14 @@ class ImuFileWriter(
         const val VERSION = 3
         const val HEADER_SIZE = 64
         const val FLAG_FSYNC = 0x01
+        const val DEVICE_ID_BYTES = 16
+        const val RESERVED_BYTES = 24
+    }
+
+    init {
+        require(deviceId == null || deviceId.size == DEVICE_ID_BYTES) {
+            "deviceId must be $DEVICE_ID_BYTES bytes (got ${deviceId?.size})"
+        }
     }
 
     private val flags: Int = if (flagsFsync) FLAG_FSYNC else 0
@@ -46,7 +61,13 @@ class ImuFileWriter(
         w.u64(startTimeNs)             // 20..27
         w.u64(0L)                      // 28..35  video_start_ns (filled with 0; reader infers)
         w.u32(flags.toLong())          // 36..39
-        w.zeros(HEADER_SIZE - w.position())  // 24-byte tail of reserved
+        // Reserved[24]: device_id occupies the first 16; remainder zero.
+        if (deviceId != null) {
+            w.bytes(deviceId)
+            w.zeros(RESERVED_BYTES - DEVICE_ID_BYTES)
+        } else {
+            w.zeros(RESERVED_BYTES)
+        }
         out.write(w.toByteArray())
     }
 
