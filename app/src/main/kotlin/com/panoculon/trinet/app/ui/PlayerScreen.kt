@@ -85,6 +85,10 @@ fun PlayerScreen(navController: NavController, recordingId: String) {
     var pendingRename by remember { mutableStateOf(false) }
     var displayName by remember { mutableStateOf(recordingId) }
     var fullscreen by remember { mutableStateOf(false) }
+    // Computed lazily on first Info-menu click so we don't pay MediaExtractor
+    // cost on every player open.
+    var infoOpen by remember { mutableStateOf(false) }
+    var info by remember { mutableStateOf<com.panoculon.trinet.app.data.RecordingInfo?>(null) }
 
     fun folder(): RecordingFolder =
         RecordingFolder(File(AppPaths.recordingsDir(context), displayName))
@@ -154,6 +158,15 @@ fun PlayerScreen(navController: NavController, recordingId: String) {
                         Icon(Icons.Default.MoreVert, contentDescription = "More")
                     }
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        DropdownMenuItem(
+                            text = { Text("Info") },
+                            onClick = {
+                                menuOpen = false
+                                info = com.panoculon.trinet.app.data.RecordingInfoCollector
+                                    .collect(folder().dir)
+                                infoOpen = true
+                            },
+                        )
                         DropdownMenuItem(
                             text = { Text("Share") },
                             onClick = { menuOpen = false; RecordingActions.share(context, folder()) },
@@ -226,6 +239,12 @@ fun PlayerScreen(navController: NavController, recordingId: String) {
                 if (renamed != null) displayName = renamed.dir.name
             },
         )
+    }
+
+    if (infoOpen) {
+        info?.let {
+            InfoDialog(info = it, onDismiss = { infoOpen = false })
+        }
     }
 }
 

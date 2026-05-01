@@ -27,6 +27,9 @@ class ImuFileReader(file: File) : AutoCloseable {
     val version: Int
     val sampleCount: Int
     val sampleSize: Int
+    /** 16-byte public per-unit device id from the header reserved region.
+     * All-zero bytes for recordings predating device-id support (pre-v4). */
+    val deviceId: ByteArray
 
     private val raf = RandomAccessFile(file, "r")
     private val map: MappedByteBuffer
@@ -49,6 +52,11 @@ class ImuFileReader(file: File) : AutoCloseable {
         startTimeNs = r.u64()
         videoStartNs = r.u64()
         flags = if (version >= 3) r.u32().toInt() else 0
+        // Reserved region: v3 has 24 bytes, v1/v2 had 28. First 16 bytes hold
+        // the v4 public device_id when present; older recordings have zeros.
+        val reservedLen = if (version >= 3) 24 else 28
+        val reserved = r.bytes(reservedLen)
+        deviceId = reserved.copyOfRange(0, minOf(16, reserved.size))
 
         sampleSize = when (version) {
             1 -> 44
@@ -59,6 +67,13 @@ class ImuFileReader(file: File) : AutoCloseable {
         val payloadBytes = file.length().toInt() - ImuFileWriter.HEADER_SIZE
         sampleCount = payloadBytes / sampleSize
     }
+
+    /** Lowercase hex of [deviceId]; empty string if all-zero (pre-v4 recording). */
+    val deviceIdHex: String
+        get() = if (deviceId.any { it.toInt() != 0 })
+            deviceId.joinToString("") { "%02x".format(it) }
+        else
+            ""
 
     /** Read the [index]-th sample (0-based). */
     fun sampleAt(index: Int): ImuSample {

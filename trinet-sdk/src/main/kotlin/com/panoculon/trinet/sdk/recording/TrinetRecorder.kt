@@ -41,11 +41,20 @@ class TrinetRecorder(
 
     private var handle: RecordingHandle? = null
 
-    /** Begin a new recording. Creates `recording_<ts>/` under [rootDir]. */
+    /**
+     * Begin a new recording. Creates `<devShort>_recording_<ts>/` under [rootDir]
+     * when the device serial is known (first 8 chars of the iSerialNumber that
+     * the Trinet camera advertises over USB), otherwise `recording_<ts>/`. The
+     * 8-char prefix lets users sort recordings by physical camera in a file
+     * browser without opening meta.json. The full device_id still lives in
+     * meta.json (deviceSerial).
+     */
     @Synchronized
     fun start(): RecordingHandle {
         check(folder == null) { "TrinetRecorder.start called while another recording is in progress" }
-        val id = "recording_" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+        val ts = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+        val devShort = device.serial?.take(8)?.takeIf { it.isNotEmpty() }
+        val id = if (devShort != null) "${devShort}_recording_$ts" else "recording_$ts"
         val dir = File(rootDir, id).also { require(it.mkdirs() || it.isDirectory) { "cannot create $it" } }
         folder = dir
 
