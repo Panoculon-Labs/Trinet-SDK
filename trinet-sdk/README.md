@@ -292,6 +292,56 @@ entry (24 bytes)
 }
 ```
 
+### H.264 SEI — Trinet IMU payload
+
+Trinet cameras embed inertial samples directly in the H.264 Annex B bitstream as SEI NAL units (`nal_unit_type = 6`), so a downstream consumer that decodes the video stream can recover the per-frame IMU data without relying on the `.imu` sidecar.
+
+The carrier is a `user_data_unregistered` SEI message (`payload_type = 5`) prefixed with a fixed 16-byte UUID, which lets parsers ignore unrelated SEI messages produced by other encoders or muxers.
+
+Reference parser: `com.panoculon.trinet.sdk.sei.SeiImuParser` and `SeiConstants` in this SDK.
+
+#### UUID (16 bytes)
+
+```
+54 52 49 4E 45 54 49 4D 55 53 45 49 00 01 00 00
+```
+
+ASCII `"TRINETIMUSEI"` (12 bytes) + payload version `0x0001` (big-endian) + 2 reserved bytes (`0x00 0x00`).
+
+#### Payload layout
+
+After the SEI message's `payload_type` and `payload_size` bytes (standard H.264 SEI framing — each is a sum of leading `0xFF` bytes terminated by a non-`0xFF` byte), the next `payload_size` bytes are:
+
+```
+header (23 bytes)
+    uuid[16]            "TRINETIMUSEI" + 0x00 0x01 0x00 0x00
+    version             uint8       (= 3)
+    num_samples         uint16-le
+    accel_fs            uint16-le   (g)
+    gyro_fs             uint16-le   (deg/s)
+
+samples (num_samples × 80 bytes, little-endian)
+    timestamp_ns        uint64      (same clock as the frame's start-of-frame timestamp)
+    accel[3]            float32     (m/s², includes gravity)
+    gyro[3]             float32     (rad/s)
+    mag[3]              float32     (µT)
+    temp_c              float32
+    quat_xyzw[4]        float32     (reserved — compute orientation downstream)
+    lin_accel[3]        float32     (reserved)
+    fsync_delay_us      float32     (per-sample offset, in µs, to the matching frame's start-of-frame)
+```
+
+The per-sample 80-byte record is byte-identical to the sample record in `imu.bin` above — the same struct, just embedded in the bitstream rather than written to a sidecar.
+
+#### Parser checklist
+
+1. **Split NAL units.** Walk Annex B start codes (`00 00 00 01` or `00 00 01`); keep NALs whose first byte's low 5 bits equal `6` (SEI).
+2. **Strip emulation prevention.** Inside an SEI NAL, remove the third byte of every `00 00 03` triplet (H.264 §7.4.1.1) before reading the SEI message.
+3. **Parse SEI messages.** For each message, read `payload_type` and `payload_size` (each is a sum of leading `0xFF` bytes plus the terminating non-`0xFF` byte). Skip messages where `payload_type ≠ 5` or where the first 16 payload bytes don't match the TRINETIMUSEI UUID.
+4. **Decode the payload** per the layout above. All multi-byte fields except the UUID's version word are little-endian.
+
+This is a Trinet-defined `user_data_unregistered` payload — generic SEI metadata extractors will not decode it without the UUID and layout above.
+
 ---
 
 ## Compose helpers
