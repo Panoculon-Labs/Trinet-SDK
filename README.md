@@ -8,6 +8,7 @@ The Trinet camera is a wearable, synchronized video + inertial-measurement devic
 
 - **[`trinet-sdk/`](trinet-sdk/)** — the redistributable library. Handles USB/UVC transport, real-time sensor-data parsing, MP4 + sidecar recording, Madgwick orientation fusion, and ships opt-in Jetpack Compose widgets for live preview and IMU visualisation. See the [SDK README](trinet-sdk/README.md) for the full API reference, file-format spec, and integration guide.
 - **[`app/`](app/)** — a minimal reference consumer that exercises the entire SDK: USB pairing, live preview, recording, a browsable library, frame-accurate VLC-style scrubbing, and IMU overlays.
+- **[`tools/`](tools/)** — laptop-side Python utilities. `trinet_live_viewer.py` opens a Trinet camera over UVC on Mac/Linux/Windows and shows live preview + IMU readouts in a Tkinter window. **Testing only** — the viewer software-decodes H.264 on the CPU and is expected to be laggy compared to the Android app (which uses MediaCodec hardware decode). Use it for quick sanity checks, IMU SEI inspection, and connectivity debugging, not production capture.
 
 ## Requirements
 

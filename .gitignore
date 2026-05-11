@@ -8,6 +8,10 @@ local.properties
 captures/
 .externalNativeBuild/
 
+# Python (tools/)
+__pycache__/
+*.pyc
+
 # Native dependencies fetched by scripts/build_native.sh
 trinet-sdk/src/main/jniLibs/*/lib*.so
 trinet-sdk/src/main/cpp/third_party/
