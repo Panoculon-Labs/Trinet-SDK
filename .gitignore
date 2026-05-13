@@ -26,3 +26,5 @@ releases/
 # See keystore/README.md.
 keystore/*.jks
 keystore/*.keystore
+
+.claude/
