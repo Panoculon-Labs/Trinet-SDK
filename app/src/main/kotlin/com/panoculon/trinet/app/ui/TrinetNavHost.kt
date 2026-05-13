@@ -10,6 +10,7 @@ object Routes {
     const val RECORD = "record"
     const val LIBRARY = "library"
     const val PLAYER = "player/{recordingId}"
+    const val TRAJECTORY = "trajectory"
     fun player(id: String) = "player/$id"
 }
 
@@ -20,6 +21,7 @@ fun TrinetNavHost() {
         composable(Routes.HOME) { HomeScreen(navController) }
         composable(Routes.RECORD) { RecordScreen(navController) }
         composable(Routes.LIBRARY) { LibraryScreen(navController) }
+        composable(Routes.TRAJECTORY) { TrajectoryScreen(navController) }
         composable(Routes.PLAYER) { backStack ->
             val id = backStack.arguments?.getString("recordingId").orEmpty()
             PlayerScreen(navController, recordingId = id)

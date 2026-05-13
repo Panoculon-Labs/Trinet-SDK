@@ -5,6 +5,7 @@ import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.view.Surface
 import com.panoculon.trinet.sdk.model.ImuSample
+import com.panoculon.trinet.sdk.model.TriposeSample
 import com.panoculon.trinet.sdk.model.VtsEntry
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -39,6 +40,8 @@ class TrinetPlayer(
 
     val imu = ImuFileReader(folder.imu)
     val vts = VtsFileReader(folder.vts)
+    /** Pose sidecar reader, or null for pre-VIO recordings (no `.pose` file). */
+    val pose: PoseFileReader? = if (folder.isPoseAvailable) PoseFileReader(folder.pose) else null
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var renderJob: Job? = null
@@ -60,6 +63,13 @@ class TrinetPlayer(
 
     private val _currentSample = MutableStateFlow<ImuSample?>(null)
     val currentSample: StateFlow<ImuSample?> = _currentSample.asStateFlow()
+
+    /**
+     * Latest VIO pose synced to the rendered frame. Null until a frame matches
+     * a `.pose` record, or for the entire playback if `.pose` is absent.
+     */
+    private val _currentPose = MutableStateFlow<TriposeSample?>(null)
+    val currentPose: StateFlow<TriposeSample?> = _currentPose.asStateFlow()
 
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying.asStateFlow()
@@ -206,14 +216,25 @@ class TrinetPlayer(
     private fun advanceTimeline(ptsUs: Long, reset: Boolean) {
         val nextFrame = (_currentFrame.value + 1).coerceAtMost(frameCount - 1)
         _currentFrame.value = nextFrame
-        if (vts.entryCount == 0 || imu.sampleCount == 0) return
+        if (vts.entryCount == 0) return
         val entry: VtsEntry = vts.entryAt(nextFrame)
-        val idx = imu.indexAt(entry.sofTimestampNs)
-        if (idx >= 0) {
-            val s = imu.sampleAt(idx)
-            _currentSample.value = s
-            _sampleStream.tryEmit(SeekOrStep(s, reset, nextFrame))
+        if (imu.sampleCount > 0) {
+            val idx = imu.indexAt(entry.sofTimestampNs)
+            if (idx >= 0) {
+                val s = imu.sampleAt(idx)
+                _currentSample.value = s
+                _sampleStream.tryEmit(SeekOrStep(s, reset, nextFrame))
+            }
         }
+        lookupPose(entry.sofTimestampNs)?.let { _currentPose.value = it }
+    }
+
+    /** Nearest-by-sof_timestamp lookup, or null if pose sidecar is absent/empty. */
+    private fun lookupPose(sofTimestampNs: Long): TriposeSample? {
+        val p = pose ?: return null
+        if (p.recordCount == 0) return null
+        val idx = p.indexAt(sofTimestampNs)
+        return if (idx >= 0) p.sampleAt(idx) else null
     }
 
     /**
@@ -251,10 +272,12 @@ class TrinetPlayer(
 
         // Keep the numeric IMU readout in sync immediately; the viewmodel
         // rebuilds plot history on its own in the scrub worker.
+        val sofNs = vts.entryAt(clamped).sofTimestampNs
         if (imu.sampleCount > 0) {
-            val idx = imu.indexAt(vts.entryAt(clamped).sofTimestampNs)
+            val idx = imu.indexAt(sofNs)
             if (idx >= 0) _currentSample.value = imu.sampleAt(idx)
         }
+        lookupPose(sofNs)?.let { _currentPose.value = it }
 
         synchronized(decoderLock) {
             val prev = lastScrubbedFrame
@@ -312,20 +335,23 @@ class TrinetPlayer(
         if (resume) play() else pause()
     }
 
-    /** Seek to a specific frame (0-based). Updates IMU to match the frame's SoF. */
+    /** Seek to a specific frame (0-based). Updates IMU + pose to match the frame's SoF. */
     fun seekToFrame(frame: Int) {
         if (closed) return
         val clamped = frame.coerceIn(0, (frameCount - 1).coerceAtLeast(0))
         _currentFrame.value = clamped
-        if (vts.entryCount == 0 || imu.sampleCount == 0) return
+        if (vts.entryCount == 0) return
         val entry = vts.entryAt(clamped)
-        val idx = imu.indexAt(entry.sofTimestampNs)
-        if (idx >= 0) {
-            // Note: the viewmodel backfills plot history + Madgwick from the
-            // .imu sidecar on seek, so we intentionally don't emit through
-            // sampleStream here — that would race the backfill.
-            _currentSample.value = imu.sampleAt(idx)
+        if (imu.sampleCount > 0) {
+            val idx = imu.indexAt(entry.sofTimestampNs)
+            if (idx >= 0) {
+                // Note: the viewmodel backfills plot history + Madgwick from the
+                // .imu sidecar on seek, so we intentionally don't emit through
+                // sampleStream here — that would race the backfill.
+                _currentSample.value = imu.sampleAt(idx)
+            }
         }
+        lookupPose(entry.sofTimestampNs)?.let { _currentPose.value = it }
         synchronized(decoderLock) {
             extractor.seekTo(entry.vencPtsUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
             if (started) {
@@ -342,5 +368,6 @@ class TrinetPlayer(
         decoder.release()
         extractor.release()
         imu.close(); vts.close()
+        pose?.close()
     }
 }

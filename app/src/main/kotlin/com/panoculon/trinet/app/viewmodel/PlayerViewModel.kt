@@ -7,9 +7,11 @@ import androidx.lifecycle.viewModelScope
 import com.panoculon.trinet.app.data.AppPaths
 import com.panoculon.trinet.sdk.fusion.Madgwick
 import com.panoculon.trinet.sdk.model.ImuSample
+import com.panoculon.trinet.sdk.model.TriposeSample
 import com.panoculon.trinet.sdk.playback.RecordingFolder
 import com.panoculon.trinet.sdk.playback.TrinetPlayer
 import com.panoculon.trinet.sdk.ui.ImuHistory
+import com.panoculon.trinet.sdk.ui.trajectory.PoseHistory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.BufferOverflow
@@ -55,6 +57,17 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     private val _currentSample = MutableStateFlow<ImuSample?>(null)
     val currentSample: StateFlow<ImuSample?> = _currentSample.asStateFlow()
 
+    val poseHistory = PoseHistory(capacity = 4096)
+    private val _poseHistoryVersion = MutableStateFlow(0)
+    val poseHistoryVersion: StateFlow<Int> = _poseHistoryVersion.asStateFlow()
+
+    private val _currentPose = MutableStateFlow<TriposeSample?>(null)
+    val currentPose: StateFlow<TriposeSample?> = _currentPose.asStateFlow()
+
+    /** True when the open recording carries a `.pose` sidecar. */
+    private val _hasPose = MutableStateFlow(false)
+    val hasPose: StateFlow<Boolean> = _hasPose.asStateFlow()
+
     private val _frame = MutableStateFlow(0)
     val frame: StateFlow<Int> = _frame.asStateFlow()
 
@@ -78,8 +91,28 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         player = p
         _frameCount.value = p.frameCount
 
+        // Reset pose history; backfill to the current frame once the player
+        // settles. Player.pose is null for pre-VIO recordings.
+        poseHistory.reset()
+        val poseReader = p.pose
+        _hasPose.value = (poseReader != null && poseReader.recordCount > 0)
+        _currentPose.value = null
+        _poseHistoryVersion.value = poseHistory.epoch
+        if (_hasPose.value) {
+            // Seed with the prefix [0, currentFrame] so the trajectory appears
+            // immediately even at frame 0 — same UX as IMU history backfill.
+            viewModelScope.launch(Dispatchers.Default) { backfillPoseFor(p, p.currentFrame.value) }
+        }
+
         bridgeJobs += p.currentFrame.onEach { _frame.value = it }.launchIn(viewModelScope)
         bridgeJobs += p.currentSample.onEach { _currentSample.value = it }.launchIn(viewModelScope)
+        bridgeJobs += p.currentPose.onEach { pose ->
+            _currentPose.value = pose
+            if (pose != null) {
+                poseHistory.add(pose)
+                _poseHistoryVersion.value = poseHistory.epoch
+            }
+        }.launchIn(viewModelScope)
         bridgeJobs += p.isPlaying.onEach { _isPlaying.value = it }.launchIn(viewModelScope)
         bridgeJobs += p.sampleStream.onEach { step ->
             if (step.reset) {
@@ -117,7 +150,10 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         val p = player ?: return
         p.seekToFrame(frame)
         _frame.value = frame
-        viewModelScope.launch(Dispatchers.Default) { backfillImuFor(p, frame) }
+        viewModelScope.launch(Dispatchers.Default) {
+            backfillImuFor(p, frame)
+            if (_hasPose.value) backfillPoseFor(p, frame)
+        }
     }
 
     /**
@@ -177,8 +213,32 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                 // 2. IMU plots: rebuild rolling window + Madgwick for this
                 //    frame so the graphs track the scrubber. Cheap (~5ms).
                 backfillImuFor(p, target)
+                // 3. Trajectory: rebuild [0, target] prefix from pose sidecar.
+                if (_hasPose.value) backfillPoseFor(p, target)
             }
         }
+    }
+
+    /**
+     * Rebuild [poseHistory] to contain every `.pose` record up to and including
+     * [frame]. Resets the buffer first so the trajectory matches the timeline
+     * after a seek/scrub.
+     */
+    private fun backfillPoseFor(p: TrinetPlayer, frame: Int) {
+        val pose = p.pose ?: return
+        if (p.vts.entryCount == 0 || pose.recordCount == 0) return
+        val sof = p.vts.entryAt(frame.coerceIn(0, p.vts.entryCount - 1)).sofTimestampNs
+        val endIdx = pose.indexAt(sof)
+        if (endIdx < 0) return
+
+        poseHistory.reset()
+        var i = 0
+        while (i <= endIdx) {
+            poseHistory.add(pose.sampleAt(i))
+            i++
+        }
+        _currentPose.value = pose.sampleAt(endIdx)
+        _poseHistoryVersion.value = poseHistory.epoch
     }
 
     /**

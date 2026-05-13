@@ -4,6 +4,7 @@ import com.panoculon.trinet.sdk.TrinetSdk
 import com.panoculon.trinet.sdk.model.ImuSample
 import com.panoculon.trinet.sdk.model.VtsEntry
 import com.panoculon.trinet.sdk.sei.SeiImuParser
+import com.panoculon.trinet.sdk.sei.SeiPoseParser
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -33,11 +34,13 @@ class TrinetRecorder(
     private var mp4: Mp4Writer? = null
     private var imu: ImuFileWriter? = null
     private var vts: VtsFileWriter? = null
+    private var pose: PoseFileWriter? = null
     private var startNs: Long = 0L
     private var observedAccelFs: Int = accelFsDefault
     private var observedGyroFs: Int = gyroFsDefault
     private var pendingFrameTsForVts: Long? = null
     private var frameNumber: Long = 0L
+    private var poseRecordCount: Long = 0L
 
     private var handle: RecordingHandle? = null
 
@@ -74,9 +77,13 @@ class TrinetRecorder(
             deviceId = deviceIdBytes,
         )
         vts = VtsFileWriter(File(dir, "frames.bin"), fps.toFloat())
+        // Pose sidecar is lazy: file is created (header written) only when the
+        // first TRIPOSE SEI shows up, so pre-VIO firmware leaves no empty .pose.
+        pose = PoseFileWriter(File(dir, "pose.bin"))
 
         startNs = System.nanoTime()
         frameNumber = 0L
+        poseRecordCount = 0L
         pendingFrameTsForVts = null
 
         val h = RecordingHandle(dir, ::stopInternal)
@@ -95,6 +102,7 @@ class TrinetRecorder(
         val mp = mp4 ?: return
         val imuW = imu ?: return
         val vtsW = vts ?: return
+        val poseW = pose
 
         // 1) Pass through to MP4 muxer (SEI included, best-effort).
         mp.writeAccessUnit(annexB, ptsUs)
@@ -110,6 +118,14 @@ class TrinetRecorder(
                 if (sofForFrame == null) {
                     sofForFrame = deriveSofNs(s)
                 }
+            }
+        }
+
+        // 2b) Extract any TRIPOSE SEI (VIO 6-DOF pose) and append to .pose.
+        if (poseW != null) {
+            for (pp in SeiPoseParser.parse(annexB)) {
+                poseW.append(pp.sample, wallClockNs = System.nanoTime())
+                poseRecordCount++
             }
         }
 
@@ -166,6 +182,15 @@ class TrinetRecorder(
             imu?.close()
             vts?.close()
             mp4?.close()
+            // If no TRIPOSE SEIs arrived (firmware without VIO, or VIO never
+            // initialized) the writer still opened the file but never wrote
+            // a record — close it and delete the zero-byte stub so
+            // RecordingFolder.isPoseAvailable stays false.
+            val poseFile = folder?.let { File(it, "pose.bin") }
+            pose?.close()
+            if (poseRecordCount == 0L && poseFile != null && poseFile.exists()) {
+                poseFile.delete()
+            }
 
             MetaWriter.write(
                 File(dir, "meta.json"),
@@ -194,7 +219,7 @@ class TrinetRecorder(
         } catch (t: Throwable) {
             handle?.update(RecordingState.Failed(t))
         } finally {
-            mp4 = null; imu = null; vts = null; folder = null
+            mp4 = null; imu = null; vts = null; pose = null; folder = null
         }
     }
 }

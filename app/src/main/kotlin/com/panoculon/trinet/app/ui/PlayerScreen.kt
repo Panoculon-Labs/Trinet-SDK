@@ -30,6 +30,10 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
+import androidx.compose.material3.TabRowDefaults
+import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -61,6 +65,7 @@ import com.panoculon.trinet.app.data.RecordingActions
 import com.panoculon.trinet.app.viewmodel.PlayerViewModel
 import com.panoculon.trinet.sdk.playback.RecordingFolder
 import com.panoculon.trinet.sdk.ui.ImuOverlayPanel
+import com.panoculon.trinet.sdk.ui.trajectory.TrajectoryPanel
 import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -77,6 +82,8 @@ fun PlayerScreen(navController: NavController, recordingId: String) {
     // key(historyVersion) — that was recreating rememberScrollState() every
     // sample, which broke scrolling during playback.
     val historyVersion by vm.historyVersion.collectAsState()
+    val hasPose by vm.hasPose.collectAsState()
+    val poseHistoryVersion by vm.poseHistoryVersion.collectAsState()
     val context = LocalContext.current
     val view = LocalView.current
 
@@ -205,12 +212,53 @@ fun PlayerScreen(navController: NavController, recordingId: String) {
             onFullscreen = { fullscreen = true },
         )
 
-        ImuOverlayPanel(
-            history = vm.history,
-            sample = sample,
-            quatXyzw = quat,
-            modifier = Modifier.fillMaxWidth().weight(1f),
-        )
+        // Bottom-panel selector: when the recording carries a `.pose` sidecar,
+        // give the user the choice between IMU plots and the VIO trajectory.
+        var bottomTab by remember { mutableStateOf(BottomTab.Sensors) }
+        if (hasPose) {
+            TabRow(
+                selectedTabIndex = bottomTab.ordinal,
+                containerColor = MaterialTheme.colorScheme.background,
+                indicator = { positions ->
+                    TabRowDefaults.SecondaryIndicator(
+                        modifier = Modifier.tabIndicatorOffset(positions[bottomTab.ordinal]),
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                },
+            ) {
+                BottomTab.entries.forEach { tab ->
+                    Tab(
+                        selected = bottomTab == tab,
+                        onClick = { bottomTab = tab },
+                        text = { Text(tab.label) },
+                    )
+                }
+            }
+        }
+        // Read the version-counters in this scope so Compose knows to
+        // recompose the panels — same pattern as historyVersion above.
+        val _phv = poseHistoryVersion
+        Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
+            when {
+                hasPose && bottomTab == BottomTab.Trajectory -> {
+                    TrajectoryPanel(
+                        history = vm.poseHistory,
+                        historyVersion = poseHistoryVersion,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                    )
+                }
+                else -> {
+                    ImuOverlayPanel(
+                        history = vm.history,
+                        sample = sample,
+                        quatXyzw = quat,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
+            }
+        }
     }
 
     if (pendingDelete) {
@@ -498,6 +546,10 @@ private fun RenameDialogInline(
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
+}
+
+private enum class BottomTab(val label: String) {
+    Sensors("Sensors"), Trajectory("Trajectory")
 }
 
 private fun formatTimecode(frame: Int, fps: Int): String {

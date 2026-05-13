@@ -9,14 +9,19 @@ import java.io.File
  *   <folder>/imu.bin
  *   <folder>/frames.bin
  *   <folder>/meta.json
+ *   <folder>/pose.bin   (optional, present when VIO ran)
  */
 data class RecordingFolder(val dir: File) {
     val video: File get() = File(dir, "video.mp4")
     val imu: File get() = File(dir, "imu.bin")
     val vts: File get() = File(dir, "frames.bin")
     val meta: File get() = File(dir, "meta.json")
+    val pose: File get() = File(dir, "pose.bin")
 
     val isComplete: Boolean get() = video.exists() && imu.exists() && vts.exists()
+
+    /** True if a VIO `.pose` sidecar accompanies this recording. Pre-VIO recordings lack it. */
+    val isPoseAvailable: Boolean get() = pose.exists() && pose.length() > 0
 
     /** Recursively delete the recording folder. Returns true on success. */
     fun delete(): Boolean = dir.deleteRecursively()

@@ -14,6 +14,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.FiberManualRecord
+import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -78,6 +79,15 @@ fun HomeScreen(navController: NavController) {
             iconTint = Color(0xFFB85C5C),
             onClick = { navController.navigate(Routes.RECORD) },
             emphasis = true,
+        )
+        Spacer(Modifier.height(12.dp))
+        ActionTile(
+            title = "Trajectory",
+            subtitle = "Live 3D map from VIO",
+            icon = Icons.Default.Map,
+            iconTint = MaterialTheme.colorScheme.tertiary,
+            onClick = { navController.navigate(Routes.TRAJECTORY) },
+            emphasis = false,
         )
         Spacer(Modifier.height(12.dp))
         ActionTile(
