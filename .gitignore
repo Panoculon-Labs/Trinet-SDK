@@ -1,0 +1,4 @@
+# This public repo carries only the prebuilt SDK AAR + docs.
+# Demo APKs are published as GitHub Releases, not committed.
+releases/
+.DS_Store
