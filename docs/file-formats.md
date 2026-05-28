@@ -121,7 +121,7 @@ appear):
   "created_at_epoch_ms": 1748090000000,
   "device": { "vendor_id": 8711, "product_id": 22, "serial": "ab12cd34..." },
   "video":  { "width": 1920, "height": 1080, "fps": 30, "codec": "h264" },
-  "sdk_version": "0.1.4"
+  "sdk_version": "0.1.5"
 }
 ```
 
