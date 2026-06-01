@@ -1,19 +1,29 @@
-# Trinet SDK for Android
+# Trinet SDK
 
-Kotlin SDK for capturing video and per-frame inertial data from **Trinet cameras**
-over USB on Android — UVC video streaming, real-time IMU parsing, recording with
-synchronized sidecars, and frame-accurate playback.
+SDKs for capturing video and per-frame inertial data from **Trinet cameras** over
+USB — on **Android** and **iOS**. Real-time IMU parsing, recording with synchronized
+sidecars, and frame-accurate playback.
 
 The Trinet camera is a wearable, synchronized video + inertial-measurement device for
 **egocentric (first-person) data collection** in visual-inertial SLAM, camera–IMU
-calibration, and dead-reckoning research. The camera streams H.264 video over a
-standard USB Video Class (UVC) interface and embeds inertial samples directly in the
-video bitstream, so every frame arrives with the IMU samples captured alongside it.
-This SDK wraps the USB transport, sensor parsing, recording, and playback so app
-developers don't have to.
+calibration, and dead-reckoning research. It streams H.264/H.265 video and embeds
+inertial samples directly in the video bitstream, so every frame arrives with the IMU
+samples captured alongside it. Each SDK wraps the USB transport, sensor parsing,
+recording, and playback so app developers don't have to.
 
-This repository distributes the **prebuilt SDK as an AAR** plus documentation. The
-demo app is published as installable APKs under [**Releases**](../../releases).
+The two platforms use **different USB transports** (Android: UVC; iOS: CDC NCM) but
+carry the same video + IMU payload and write the same on-disk format — see
+[**docs/TRANSPORT.md**](docs/TRANSPORT.md).
+
+## Platforms
+
+| Platform | How it's distributed | Start here |
+|---|---|---|
+| **Android** | Prebuilt **AAR** (`com.panoculon:trinet-sdk:0.1.5`) + docs; demo APKs under [Releases](../../releases) | this page ↓ |
+| **iOS** | **Swift source** via Swift Package Manager | [**ios/README.md**](ios/README.md) |
+
+> The rest of this page documents the **Android** SDK. For **iOS**, see
+> [ios/README.md](ios/README.md) (install, API, and a clone→Xcode→iPhone quickstart).
 
 ---
 
@@ -224,6 +234,34 @@ player.play()
 Prebuilt demo APKs are attached to each [GitHub Release](../../releases). The demo
 exercises the entire SDK: USB pairing, live preview, recording, a browsable library,
 frame-accurate VLC-style scrubbing, and IMU overlays.
+
+---
+
+## iOS (Swift Package)
+
+The iOS SDK is distributed as **Swift source** under [`ios/`](ios/) and consumed via
+Swift Package Manager (zero external dependencies). On iOS the camera connects as a
+**CDC NCM (USB-Ethernet)** device rather than UVC — see
+[docs/TRANSPORT.md](docs/TRANSPORT.md).
+
+```swift
+// Consumer Package.swift
+dependencies: [
+    .package(url: "https://github.com/Panoculon-Labs/Trinet-SDK", from: "0.1.0"),
+],
+targets: [
+    .target(name: "MyApp", dependencies: [
+        .product(name: "TrinetSDK", package: "Trinet-SDK"),
+    ]),
+]
+```
+
+In Xcode: **File → Add Package Dependencies…** → the repo URL → add the **TrinetSDK**
+product. (`Package.swift` is at the repo root because SwiftPM requires it there.)
+
+Full iOS guide — API, file formats, wire spec, and a **clone → Xcode → iPhone**
+quickstart for the demo app — is in [**ios/README.md**](ios/README.md). iOS wire
+protocol: [ios/docs/PROTOCOLS.md](ios/docs/PROTOCOLS.md).
 
 ## License
 
