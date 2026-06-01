@@ -28,7 +28,7 @@ you depend on the repo directly:
 ```swift
 // Consumer Package.swift
 dependencies: [
-    .package(url: "https://github.com/Panoculon-Labs/Trinet-SDK", from: "0.1.0"),
+    .package(url: "https://github.com/Panoculon-Labs/Trinet-SDK", from: "0.1.6"),
 ],
 targets: [
     .target(name: "MyApp", dependencies: [
@@ -38,7 +38,7 @@ targets: [
 ```
 
 In Xcode: **File → Add Package Dependencies…** → enter the repo URL → **Up to
-Next Major `0.1.0`** → add the **TrinetSDK** product.
+Next Major `0.1.6`** → add the **TrinetSDK** product.
 
 `import TrinetSDK` and you're set.
 
@@ -341,7 +341,7 @@ In Xcode:
 
 ## Versioning
 
-`TrinetSDK.version` — currently **`0.1.0`**, kept in lockstep with the git tag
+`TrinetSDK.version` — currently **`0.1.6`**, kept in lockstep with the git tag
 and the Android SDK. Bump on on-disk-format changes, wire-protocol changes, or
 non-additive API changes. Release notes are published under
 [**Releases**](../../releases).

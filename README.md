@@ -247,7 +247,7 @@ Swift Package Manager (zero external dependencies). On iOS the camera connects a
 ```swift
 // Consumer Package.swift
 dependencies: [
-    .package(url: "https://github.com/Panoculon-Labs/Trinet-SDK", from: "0.1.0"),
+    .package(url: "https://github.com/Panoculon-Labs/Trinet-SDK", from: "0.1.6"),
 ],
 targets: [
     .target(name: "MyApp", dependencies: [
