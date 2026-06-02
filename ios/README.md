@@ -221,9 +221,9 @@ Accel + gyro only — yaw drifts without a magnetometer reference. Drives
 - **`LivePreviewView(stream:)`** — wraps `AVSampleBufferDisplayLayer`; feed it
   `session.sampleStream`.
 - **`ImuPlotView(history:)`** — real-time accel/gyro plot; `ImuHistory` is an
-  `ObservableObject` ring buffer; `ImuAxis` supplies the Okabe-Ito colours +
+  `ObservableObject` ring buffer; `ImuAxis` supplies the Okabe-Ito colors +
   dash patterns used consistently across the UI.
-- **`OrientationCubeView(quaternion:)`** — wireframe cube + coloured X/Y/Z axes
+- **`OrientationCubeView(quaternion:)`** — wireframe cube + colored X/Y/Z axes
   driven by a `Quaternion`.
 - **`PlaybackImuTrackView`** — IMU timeline aligned to the video for playback
   scrubbing (windows on absolute device-ns).
@@ -351,10 +351,10 @@ one-line config file on the camera's SD card.
 
 ## Versioning
 
-`TrinetSDK.version` — currently **`0.1.6`**, kept in lockstep with the git tag
-and the Android SDK. Bump on on-disk-format changes, wire-protocol changes, or
-non-additive API changes. Release notes are published under
-[**Releases**](../../releases).
+`TrinetSDK.version` — currently **`0.1.6`**, tracking the git tag. Bump on
+on-disk-format changes, wire-protocol changes, or non-additive API changes. The
+Android SDK is versioned independently; both share the same on-disk and
+wire formats. Release notes are published under [**Releases**](../../releases).
 
 ## License
 

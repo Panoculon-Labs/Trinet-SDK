@@ -63,7 +63,7 @@ Same camera, same encoder, same IMU — two USB descriptors.
 - The JNI shim copies each frame to Kotlin and stamps it with `CLOCK_MONOTONIC`.
 - IMU is parsed from the SEI NALs inside those same frames.
 
-Android-specific gotchas (Android 9–14): the app must hold `CAMERA` at the
+Android-specific requirements (Android 9–14): the app must hold `CAMERA` at the
 moment of the USB-permission request, the receiver must be `RECEIVER_EXPORTED`
 on API 33+, and the pending intent must be package-scoped for Android 14.
 Details in the Android SDK docs ([streaming](streaming.md), [IMU](imu.md)).

@@ -38,6 +38,11 @@ canonical decoders for these formats.
 
 Magic `TRIMU001`, current version **3**. A 64-byte header followed by fixed-size samples.
 
+> Recordings made by the iOS SDK are stamped **version 4** — a layout-compatible
+> superset that repurposes 8 of the reserved header bytes for an iOS host-clock
+> offset. The header and sample layouts are otherwise identical, so a v3 reader
+> parses a v4 file (and vice versa) without changes.
+
 ### Header (64 bytes)
 
 | Offset | Size | Field | Notes |

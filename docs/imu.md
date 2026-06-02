@@ -3,7 +3,7 @@
 The Trinet camera embeds inertial samples directly in the H.264 bitstream: every video
 frame carries an SEI NAL with the IMU samples captured alongside it. The SDK decodes
 these for you, both live (off the stream) and from a recording. This guide covers the
-sample model, getting samples live, and the orientation-fusion + visualisation helpers.
+sample model, getting samples live, and the orientation-fusion + visualization helpers.
 
 - [The IMU sample](#the-imu-sample)
 - [Sample rate](#sample-rate)
@@ -52,8 +52,8 @@ from the raw streams with the Madgwick helper.
 
 The camera produces inertial samples at roughly **500–562 Hz**. Each video frame's SEI
 NAL carries the batch of samples captured since the previous frame (so at 30 fps you'll
-see ~17–19 samples per frame). The exact rate is reported per-recording in the IMU
-sidecar header (see [file formats](file-formats.md)); a typical configured value is
+see ~17–19 samples per frame). The exact rate is recorded in the IMU
+sidecar header (see [file formats](file-formats.md)); the typical value is
 562 Hz.
 
 ---

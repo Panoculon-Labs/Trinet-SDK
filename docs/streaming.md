@@ -86,7 +86,7 @@ for (nal in nals) {
 }
 ```
 
-To pull the IMU out of the SEI NALs, see [docs/imu.md](imu.md).
+To pull the IMU out of the SEI NALs, see [IMU extraction](imu.md).
 
 ---
 

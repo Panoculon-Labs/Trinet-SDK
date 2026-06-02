@@ -1,6 +1,6 @@
 # Getting started
 
-This guide takes you from an empty Android project to a granted, open Trinet camera. It
+This guide takes you from an empty Android project to an open Trinet camera with USB permission granted. It
 covers the manifest, the permissions Android requires for a USB video device, the
 runtime permission flow, and the discovery API.
 
@@ -150,7 +150,7 @@ import com.panoculon.trinet.sdk.device.DeviceInfo
 val attached: List<android.hardware.usb.UsbDevice> =
     DeviceDiscovery.connectedDevices(context)
 
-// You can also filter raw UsbManager output yourself:
+// Alternatively, you can filter raw UsbManager output:
 val isTrinet = DeviceInfo(
     vendorId = usbDevice.vendorId,
     productId = usbDevice.productId,
