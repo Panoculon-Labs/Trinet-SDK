@@ -15,6 +15,10 @@ The two platforms use **different USB transports** (Android: UVC; iOS: CDC NCM) 
 carry the same video + IMU payload and write the same on-disk format — see
 [**docs/TRANSPORT.md**](docs/TRANSPORT.md).
 
+The camera selects its USB mode from a one-line `trinet_mode.conf` on its SD card:
+`mode=uvc` for Android, `mode=ncm` for iPhone. Insert the card and power on; the
+status LED confirms the active mode.
+
 ## Platforms
 
 | Platform | How it's distributed | Start here |
@@ -242,7 +246,9 @@ frame-accurate VLC-style scrubbing, and IMU overlays.
 The iOS SDK is distributed as **Swift source** under [`ios/`](ios/) and consumed via
 Swift Package Manager (zero external dependencies). On iOS the camera connects as a
 **CDC NCM (USB-Ethernet)** device rather than UVC — see
-[docs/TRANSPORT.md](docs/TRANSPORT.md).
+[docs/TRANSPORT.md](docs/TRANSPORT.md). Put the camera in this mode with
+`mode=ncm` in `Trinet/trinet_mode.conf` on its SD card
+([details](ios/README.md#use-it-with-the-camera)).
 
 ```swift
 // Consumer Package.swift
