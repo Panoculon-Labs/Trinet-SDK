@@ -318,11 +318,24 @@ In Xcode:
 
 ### Use it with the camera
 
-1. Plug the Trinet camera into the iPhone. **Settings → Ethernet** shows a new
+The camera must be in **iPhone (CDC NCM) mode** before iOS can see it — in that
+mode it presents as a USB-Ethernet device (see
+[`../docs/TRANSPORT.md`](../docs/TRANSPORT.md)). You select the mode with a
+one-line config file on the camera's SD card.
+
+1. **Put the camera in iPhone mode.** Copy [`trinet_mode.conf`](trinet_mode.conf)
+   — a one-line file containing `mode=ncm` — onto the camera's SD card so its
+   path is `Trinet/trinet_mode.conf`, then insert the card and power the camera
+   on. The status LED turns **cyan** to indicate iPhone (NCM) mode.
+2. Plug the Trinet camera into the iPhone. **Settings → Ethernet** shows a new
    interface within ~3 s.
-2. Open the app — the Home tab shows one Trinet on `172.32.<X>.x`.
-3. Hit Record. Files land in the app's `Documents/Trinet/` folder (pull them via
+3. Open the app — the Home tab shows one Trinet on `172.32.<X>.x`.
+4. Hit Record. Files land in the app's `Documents/Trinet/` folder (pull them via
    Finder → device → Files → TrinetApp).
+
+> The config file is just plain text — `mode=ncm` on its own line. You can
+> create it by hand instead of copying it; the camera reads it from the SD
+> card's `Trinet/` folder on each boot.
 
 ---
 
