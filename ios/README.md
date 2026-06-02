@@ -273,10 +273,9 @@ IMU facts back out of a finished recording for display.
 
 ## Reference app (`TrinetApp/`)
 
-SwiftUI demo: device list, live preview + IMU plot, big record button, library
-with player (play/pause/seek, fullscreen, share single MP4), and codec/bitrate
-settings. It builds `TrinetSDK` as a sibling framework target (more robust than
-a local SwiftPM dep under Xcode 26).
+A complete SwiftUI demo: device list, live preview with IMU plot, record
+button, a library with full playback (play/pause/seek, fullscreen, share), and
+codec/bitrate settings. It builds `TrinetSDK` as a sibling framework target.
 
 > iOS has no "download an APK" equivalent — apps must be code-signed for your
 > own device. The steps below build and install the demo on your iPhone from
@@ -285,8 +284,7 @@ a local SwiftPM dep under Xcode 26).
 ### Quickstart — clone, build, run on your iPhone
 
 **Prerequisites:** a Mac with **Xcode 16+**, an **Apple ID**, and
-[XcodeGen](https://github.com/yonomi/xcodegen) (`brew install xcodegen`). The
-`.xcodeproj` is generated, not committed.
+[XcodeGen](https://github.com/yonomi/xcodegen) (`brew install xcodegen`).
 
 ```bash
 # 1. Clone
@@ -304,9 +302,8 @@ In Xcode:
 
 4. **Set your signing team** (one-time): select the **TrinetApp** target →
    **Signing & Capabilities** → check *Automatically manage signing* → pick your
-   **Team** (your personal Apple ID works). The repo ships **no** hardcoded team,
-   so this is required. If the bundle id `com.panoculon.trinet.app` is taken,
-   change it to something unique (e.g. `com.<you>.trinet.app`).
+   **Team** (a personal Apple ID works). The project ships with no hardcoded
+   team, so this step is required.
 5. Plug your **iPhone** (USB-C, iOS 17+) into the Mac and **trust** the computer.
 6. Pick your iPhone as the run destination and press **▶ Run**. First run:
    on the phone, go to **Settings → General → VPN & Device Management** and
