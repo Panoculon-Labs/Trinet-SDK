@@ -15,7 +15,7 @@ is identical across them.
 | Device appears as | a camera the app opens directly | an **Ethernet** interface (Settings → Ethernet) |
 | IP stack | none | yes (DHCP lease, `172.32.x.0/24`) |
 | Control / status | n/a (UVC controls) | JSON over HTTP `:8081` |
-| Clock sync | frame PTS from SEI | SEI **+** UDP probe `:5557` |
+| Clock sync | device timestamps in the SEI | device timestamps in the SEI |
 | Native code | C/C++ (libuvc, libusb via JNI) | none — pure Swift on Apple frameworks |
 
 ## Why they differ
@@ -28,8 +28,8 @@ was confirmed with Apple Developer Technical Support.)
 So the Trinet firmware presents **two different USB personalities**:
 
 - To **Android**, it is a **UVC camera**. Android *can* drive USB devices
-  directly from user space (via `UsbManager` + libusb), so the SDK talks UVC and
-  pays no IP-stack overhead.
+  directly from user space (via `UsbManager` + libusb), so the SDK talks UVC
+  directly.
 - To **iPhone**, it is a **CDC NCM** USB-Ethernet adapter. iOS happily brings up
   a USB-Ethernet interface, gets a DHCP lease, and lets apps open normal
   sockets — so the firmware serves the very same video stream over HTTP and the
@@ -78,8 +78,8 @@ Details in the Android SDK docs ([streaming](streaming.md), [IMU](imu.md)).
 └─────────────┘            │        │                       │
                            │   NWConnection (pinned iface)  │
                            │        │                       │
-                           │   VideoStream  DeviceAPI  Sync │
-                           │  :8080 video  :8081 JSON  :5557│
+                           │     VideoStream   DeviceAPI    │
+                           │    :8080 video    :8081 JSON   │
                            │        │                       │
                            │   Mp4Writer / TrinetSEI        │
                            └───────────────────────────────┘
@@ -91,8 +91,11 @@ Details in the Android SDK docs ([streaming](streaming.md), [IMU](imu.md)).
 - The SDK pins every `NWConnection` to that USB interface
   (`NWParameters.requiredInterface`) so traffic can't escape to Wi-Fi/cellular.
 - Video is pulled with a plain `GET /live.h264` (or `.h265`) over **TCP `:8080`**;
-  device control/status is JSON over **HTTP `:8081`**; a UDP **`:5557`** probe
-  measures the device↔host clock offset.
+  device control/status is JSON over **HTTP `:8081`**.
+- Video↔IMU sync needs no extra channel: every frame's IMU SEI carries the
+  device Start-of-Frame timestamp on the same clock as the frames. (A `:5557`
+  UDP host-offset probe exists for a future multi-camera case, but is not used
+  for normal sync.)
 - No native code: the whole SDK is Swift over Network.framework / AVFoundation /
   VideoToolbox.
 
@@ -120,9 +123,8 @@ and tooling are cross-compatible:
 
 | Concern | UVC (Android) | CDC NCM (iOS) |
 |---|---|---|
-| Latency / overhead | Lower — direct isochronous, no IP stack | Slightly higher — TCP/IP + HTTP framing |
 | App complexity | Native libusb/libuvc + JNI, USB permission dance | Pure Swift sockets; needs interface pinning |
 | Bring-up | Plug in, grant USB permission | Wait for DHCP lease + Ethernet iface to appear |
 | Portability of client | Tied to libusb/libuvc + NDK ABIs | Standard networking; zero native deps |
 | Multi-device | Multiple UVC handles | Multiple interfaces / per-interface socket binding |
-| Why this platform | iPhone can't open external UVC at all | Android can drive USB directly, so UVC is cheaper there |
+| Why this platform | Android can drive USB directly from user space | iPhone can't open external UVC at all |

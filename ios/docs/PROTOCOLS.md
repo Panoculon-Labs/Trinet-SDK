@@ -115,6 +115,12 @@ timing sidecar, yielding ~1 ms video↔IMU alignment on the device clock.
 A lightweight Cristian's-algorithm probe to measure the device-vs-host clock
 offset (`SyncCoordinator.swift`).
 
+> **Optional — not used for video↔IMU sync.** Each frame's IMU SEI already
+> carries the device Start-of-Frame timestamp on the same clock as the frames,
+> so alignment needs no UDP probe. This endpoint exists only for a future
+> multi-camera host-offset case; the SDK does not call it during normal
+> streaming or recording.
+
 ### Request (8 bytes, big-endian)
 | Offset | Size | Field |
 |--------|------|-------|
