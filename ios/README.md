@@ -68,7 +68,7 @@ guard let device = devices.first else { return }
 
 // 2. Connect + (optionally) configure
 try await device.connect()
-try await device.applyConfig(.init(codec: .h265, bitrateKbps: 15_000))
+try await device.applyConfig(.init(codec: .h264, bitrateKbps: 15_000))
 
 // 3. Open a live session
 let session = await device.liveSession()
@@ -195,7 +195,7 @@ thread (safe to call from `@MainActor`) so the UI never hangs on finish.
 
 ```swift
 struct DeviceConfig { var codec; var resolution; var fps; var bitrateKbps; var gopSeconds }
-static let `default`           // H.265, 1080p30
+static let `default`           // H.264, 1080p30
 static let presets: [(label: String, config: DeviceConfig)]
 enum VideoCodec { case h264, h265 }
 enum VideoResolution { case res1080p, res720p, res480p }   // NCM streams 1080p30
