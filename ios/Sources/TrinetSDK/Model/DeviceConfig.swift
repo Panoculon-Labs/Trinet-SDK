@@ -28,7 +28,7 @@ public struct DeviceConfig: Sendable, Codable, Equatable {
     public var bitrateKbps: Int
     public var gopSeconds: Int
 
-    public init(codec: VideoCodec = .h265,
+    public init(codec: VideoCodec = .h264,
                 resolution: VideoResolution = .res1080p,
                 fps: Int = 30,
                 bitrateKbps: Int = 15000,
@@ -44,12 +44,14 @@ public struct DeviceConfig: Sendable, Codable, Equatable {
     /// so a fresh device that's never been configured looks like this).
     public static let `default` = DeviceConfig()
 
-    /// Reasonable presets exposed in the app's settings screen.
+    /// Reasonable presets SDK consumers can apply via `TrinetDevice.applyConfig`.
+    /// (The demo app has no settings screen; it streams the firmware's default,
+    /// which is H.264.)
     public static let presets: [(label: String, config: DeviceConfig)] = [
-        ("1080p H.265 @ 15 Mbps", DeviceConfig(codec: .h265, resolution: .res1080p, fps: 30, bitrateKbps: 15000)),
         ("1080p H.264 @ 15 Mbps", DeviceConfig(codec: .h264, resolution: .res1080p, fps: 30, bitrateKbps: 15000)),
-        ("1080p H.265 @ 8 Mbps",  DeviceConfig(codec: .h265, resolution: .res1080p, fps: 30, bitrateKbps: 8000)),
-        ("720p H.265 @ 6 Mbps",   DeviceConfig(codec: .h265, resolution: .res720p,  fps: 30, bitrateKbps: 6000)),
-        ("720p H.264 @ 4 Mbps",   DeviceConfig(codec: .h264, resolution: .res720p,  fps: 30, bitrateKbps: 4000)),
+        ("1080p H.265 @ 15 Mbps", DeviceConfig(codec: .h265, resolution: .res1080p, fps: 30, bitrateKbps: 15000)),
+        ("1080p H.264 @ 8 Mbps",  DeviceConfig(codec: .h264, resolution: .res1080p, fps: 30, bitrateKbps: 8000)),
+        ("720p H.264 @ 6 Mbps",   DeviceConfig(codec: .h264, resolution: .res720p,  fps: 30, bitrateKbps: 6000)),
+        ("720p H.265 @ 4 Mbps",   DeviceConfig(codec: .h265, resolution: .res720p,  fps: 30, bitrateKbps: 4000)),
     ]
 }

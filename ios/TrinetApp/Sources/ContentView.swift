@@ -13,9 +13,6 @@ struct ContentView: View {
 
             LibraryView()
                 .tabItem { Label("Library", systemImage: "folder") }
-
-            SettingsView()
-                .tabItem { Label("Settings", systemImage: "gear") }
         }
     }
 }

@@ -29,8 +29,6 @@ final class DeviceViewModel: ObservableObject {
     @Published var isScanning: Bool = false
     @Published var lastError: String?
 
-    @Published var config: DeviceConfig = .default
-
     private let discovery = TrinetDiscovery()
 
     func scan() async {
@@ -51,17 +49,6 @@ final class DeviceViewModel: ObservableObject {
             let st = try await dev.storage()
             self.storageTotal = st.total_bytes
             self.storageFree  = st.available_bytes
-            self.config = await dev.currentConfig
-        } catch {
-            lastError = friendlyTrinetError(error)
-        }
-    }
-
-    func apply(config: DeviceConfig) async {
-        guard let dev = selected else { return }
-        do {
-            try await dev.applyConfig(config)
-            self.config = config
         } catch {
             lastError = friendlyTrinetError(error)
         }
