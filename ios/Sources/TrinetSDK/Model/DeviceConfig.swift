@@ -45,8 +45,8 @@ public struct DeviceConfig: Sendable, Codable, Equatable {
     public static let `default` = DeviceConfig()
 
     /// Reasonable presets SDK consumers can apply via `TrinetDevice.applyConfig`.
-    /// (The demo app has no settings screen; it streams the firmware's default,
-    /// which is H.264.)
+    /// (The demo app's Settings tab exposes only the codec — H.264 default,
+    /// switchable to H.265 — and otherwise streams the firmware's defaults.)
     public static let presets: [(label: String, config: DeviceConfig)] = [
         ("1080p H.264 @ 15 Mbps", DeviceConfig(codec: .h264, resolution: .res1080p, fps: 30, bitrateKbps: 15000)),
         ("1080p H.265 @ 15 Mbps", DeviceConfig(codec: .h265, resolution: .res1080p, fps: 30, bitrateKbps: 15000)),

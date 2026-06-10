@@ -27,11 +27,12 @@ struct RecordView: View {
                 .padding(.vertical)
             }
             .navigationTitle("Record")
-            .task(id: device.selected?.host) {
-                // Restart session when the selected device changes (or first appears).
+            .task(id: "\(device.selected?.host ?? "none")|\(device.codec.rawValue)") {
+                // Restart the session when the selected device or the chosen
+                // encoding changes (or on first appearance).
                 await vm.closeSession()
                 if let dev = device.selected {
-                    await vm.openSession(on: dev)
+                    await vm.openSession(on: dev, codec: device.codec)
                 }
             }
             .onDisappear {

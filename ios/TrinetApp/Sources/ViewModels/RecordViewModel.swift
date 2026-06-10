@@ -27,8 +27,10 @@ final class RecordViewModel: ObservableObject {
     private var tickerTask: Task<Void, Never>?
     private var startedAt = Date()
 
-    func openSession(on device: TrinetDevice) async {
+    func openSession(on device: TrinetDevice, codec: VideoCodec) async {
         if session != nil { return }
+        // The live session requests `/live.<codec>`; set it before opening.
+        await device.setLocalConfig(DeviceConfig(codec: codec))
         let s = await device.liveSession()
         self.session = s
         self.sampleStream = s.sampleStream

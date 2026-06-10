@@ -275,7 +275,8 @@ IMU facts back out of a finished recording for display.
 
 A complete SwiftUI demo: device list, live preview with IMU plot, record
 button, a library with full playback (play/pause/seek, fullscreen, share), and
-codec/bitrate settings. It builds `TrinetSDK` as a sibling framework target.
+a Settings tab to pick the video encoding (H.264 default / H.265). It builds
+`TrinetSDK` as a sibling framework target.
 
 > iOS has no "download an APK" equivalent — apps must be code-signed for your
 > own device. The steps below build and install the demo on your iPhone from
