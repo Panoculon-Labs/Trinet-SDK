@@ -36,51 +36,59 @@ canonical decoders for these formats.
 
 ## IMU sidecar (`imu.bin`)
 
-Magic `TRIMU001`, current version **3**. A 64-byte header followed by fixed-size samples.
+Magic `TRIMU001`, current version **5**. A 64-byte header followed by fixed-size samples.
 
-> Recordings made by the iOS SDK are stamped **version 4** — a layout-compatible
-> superset that repurposes 8 of the reserved header bytes for an iOS host-clock
-> offset. The header and sample layouts are otherwise identical, so a v3 reader
-> parses a v4 file (and vice versa) without changes.
+> **Version history (all layout-compatible — a reader for any version parses the others):**
+> - **v3** — base 80-byte sample (the trailing float is a frame-sync delay).
+> - **v4** — repurposes 8 of the reserved header bytes for an iOS host-clock offset.
+> - **v5** — cameras with a magnetometer: `mag[3]` carries live data and the trailing
+>   float becomes `mag_age_us` (the frame-sync delay is unused — `flags` bit 0 is clear,
+>   bit 1 is set). Header and sample byte layouts are identical to v3/v4, so older
+>   recordings keep parsing unchanged and a v5-aware reader handles every version.
 
 ### Header (64 bytes)
 
 | Offset | Size | Field | Notes |
 |---:|---:|---|---|
 | 0 | 8 | `magic` | ASCII `"TRIMU001"` |
-| 8 | 4 | `version` | `3` |
+| 8 | 4 | `version` | `3`, `4`, or `5` |
 | 12 | 4 | `sample_rate_hz` | configured IMU rate |
 | 16 | 2 | `accel_fs` | accelerometer full-scale code |
 | 18 | 2 | `gyro_fs` | gyroscope full-scale code |
 | 20 | 8 | `start_time_ns` | timestamp of the first sample (ns) |
 | 28 | 8 | `video_start_ns` | `0` when unused (reader infers) |
-| 36 | 4 | `flags` | bit 0 (`0x01`) = frame-sync alignment present |
+| 36 | 4 | `flags` | bit 0 (`0x01`) = frame-sync alignment present; bit 1 (`0x02`) = magnetometer present (v5) |
 | 40 | 24 | `reserved` | first 16 bytes = public device id (zero if unknown); rest zero |
 
 Exposed by `ImuFileReader` as `version`, `sampleRateHz`, `accelFs`, `gyroFs`,
 `startTimeNs`, `videoStartNs`, `flags`, `deviceId` (16 bytes) / `deviceIdHex`,
 `sampleCount`, `sampleSize`.
 
-### Sample (80 bytes, v3)
+### Sample (80 bytes, v3/v4/v5 — identical layout)
 
 | Offset | Size | Field | Type | Unit |
 |---:|---:|---|---|---|
 | 0 | 8 | `timestamp_ns` | uint64 | ns |
 | 8 | 12 | `accel[3]` | float32×3 | m/s² (gravity included) |
 | 20 | 12 | `gyro[3]` | float32×3 | rad/s |
-| 32 | 12 | `mag[3]` | float32×3 | µT |
+| 32 | 12 | `mag[3]` | float32×3 | µT (live on v5; zero otherwise) |
 | 44 | 4 | `temp_c` | float32 | °C |
 | 48 | 16 | `quat_xyzw[4]` | float32×4 | reserved |
 | 64 | 12 | `lin_accel[3]` | float32×3 | reserved |
-| 76 | 4 | `fsync_delay_us` | float32 | µs |
+| 76 | 4 | `fsync_delay_us` / `mag_age_us` | float32 | µs |
 
-This maps directly to [`ImuSample`](imu.md#the-imu-sample). `quat_xyzw` and `lin_accel`
-are reserved (identity/zero) — compute orientation with the
+The trailing float at offset 76 is `fsync_delay_us` on v3/v4 and `mag_age_us` on v5
+(µs from this sample's timestamp back to the magnetometer reading; absolute mag time =
+`timestamp_ns − mag_age_us × 1000`). It's the same 4 bytes — the header `version` (and
+`flags` bit 1) tells you which it is. Exposed on [`ImuSample`](imu.md#the-imu-sample) as
+both `fsyncDelayUs` and `magAgeUs` (a typed view of the same slot).
+
+`quat_xyzw` and `lin_accel` are reserved (identity/zero) — compute orientation with the
 [Madgwick helper](imu.md#orientation-fusion-madgwick).
 
 > **Older versions:** `ImuFileReader` also reads v1 (44-byte samples) and v2 (76-byte
 > samples), promoting them into the `ImuSample` shape with the missing fields set to
-> zero/identity. Only v3 carries `fsync_delay_us`.
+> zero/identity. v3/v4 carry `fsync_delay_us`; v5 carries `mag_age_us` + live `mag`.
 
 ---
 
@@ -126,7 +134,7 @@ appear):
   "created_at_epoch_ms": 1748090000000,
   "device": { "vendor_id": 8711, "product_id": 22, "serial": "ab12cd34..." },
   "video":  { "width": 1920, "height": 1080, "fps": 30, "codec": "h264" },
-  "sdk_version": "0.1.5"
+  "sdk_version": "0.1.6"
 }
 ```
 
@@ -185,9 +193,11 @@ and `addEmulationPrevention`.
 - **`timestamp_ns`** (per IMU sample) and **`sof_timestamp_ns`** (per frame) share the
   same device monotonic clock — that's why aligning IMU to a frame is a nearest-by-
   timestamp lookup against the frame's `sof_timestamp_ns`.
-- **`fsync_delay_us`** is the offset between the hardware frame-sync pulse and the
-  sample; the recorder derives a frame's `sof_timestamp_ns` from the SEI sample's
-  timestamp minus this delay.
+- **`fsync_delay_us`** (v3/v4 recordings) is the offset between the hardware frame-sync
+  pulse and the sample; the recorder derives a frame's `sof_timestamp_ns` from the SEI
+  sample's timestamp minus this delay. On **v5** recordings the trailing float is
+  `mag_age_us` instead (there is no frame-sync delay), so `sof_timestamp_ns` is taken
+  directly from the SEI sample timestamp / `venc_pts_us` — never subtract `mag_age_us`.
 - **`venc_pts_us`** is the MP4 presentation timestamp — use it to *seek the video
   decoder*, not to align IMU. The decoder paces on PTS; IMU alignment uses
   `sof_timestamp_ns`.

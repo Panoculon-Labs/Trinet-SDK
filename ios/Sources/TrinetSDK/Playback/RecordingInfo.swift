@@ -33,6 +33,7 @@ public struct RecordingInfo: Sendable {
     public var accelFsName: String?
     public var gyroFsName: String?
     public var frameSyncEnabled: Bool?
+    public var magPresent: Bool?        // v5+: live magnetometer data is present
 
     // vts
     public var vtsVersion: Int?
@@ -126,7 +127,7 @@ public enum RecordingInfoCollector {
         }
     }
 
-    // MARK: imu (TRIMU001 v4, 64-byte header + 80-byte samples)
+    // MARK: imu (TRIMU001 v4/v5, 64-byte header + 80-byte samples)
 
     private static func collectImu(_ url: URL, into info: inout RecordingInfo) {
         guard let d = try? Data(contentsOf: url), d.count >= 64 else { return }
@@ -140,6 +141,7 @@ public enum RecordingInfoCollector {
             info.gyroFsName  = gyroFsNames.indices.contains(gyroFs)   ? gyroFsNames[gyroFs]   : "fs=\(gyroFs)"
             let flags = UInt32(littleEndian: b.loadUnaligned(fromByteOffset: 36, as: UInt32.self))
             info.frameSyncEnabled = (flags & 0x01) != 0
+            info.magPresent = (flags & 0x02) != 0
             let id = Data(bytes: b.advanced(by: 40), count: 16)
             let hex = id.map { String(format: "%02x", $0) }.joined()
             info.deviceIdHex = hex == String(repeating: "0", count: 32) ? nil : hex

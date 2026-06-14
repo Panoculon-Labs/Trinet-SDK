@@ -175,7 +175,7 @@ public struct ImuPlaybackData: Sendable {
                     let nal = Data(bytes: b + off, count: len)
                     if case .imu(let batch)? = TrinetSEI.parse(nalPayload: nal, codec: codec) {
                         if originNs == nil, let s0 = batch.samples.first {
-                            originNs = TrinetSEI.deriveSofNs(s0)
+                            originNs = TrinetSEI.deriveSofNs(s0, version: batch.version)
                         }
                         samples.append(contentsOf: batch.samples)
                     }

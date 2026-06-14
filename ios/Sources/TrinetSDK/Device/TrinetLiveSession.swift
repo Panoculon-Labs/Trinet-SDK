@@ -119,9 +119,9 @@ public final class TrinetLiveSession: @unchecked Sendable {
                 case .imu(let batch):
                     imuStreamMaker.continuation.yield(batch)        // → UI plot
                     lock.lock(); let sink = recordSink; lock.unlock()
-                    sink?.writeIMU(batch.samples)                   // → .imu file
+                    sink?.writeIMU(batch.samples, version: batch.version)  // → .imu file
                     if pendingSofNs == nil, let s0 = batch.samples.first {
-                        pendingSofNs = TrinetSEI.deriveSofNs(s0)
+                        pendingSofNs = TrinetSEI.deriveSofNs(s0, version: batch.version)
                     }
                 case .temp:
                     break   // thermal trace — surfaced later if needed

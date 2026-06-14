@@ -20,11 +20,15 @@
 
 import Foundation
 
-/// One frame's IMU batch (~19 samples at 562 Hz / 30 fps).
+/// One frame's IMU batch (~13–19 samples per frame depending on sample rate).
 public struct ImuBatch: Sendable {
     public let samples: [ImuSample]
     public let accelFs: Int
     public let gyroFs: Int
+    /// TRIMU format version the camera stamped on this SEI (3/4 = frame-sync
+    /// delay in the trailing float; 5 = live magnetometer + mag_age_us). 0 if
+    /// the camera predates the version byte.
+    public let version: Int
 }
 
 /// SoC thermal reading (~1 Hz). Non-critical.
@@ -83,9 +87,14 @@ enum TrinetSEI {
         return nil
     }
 
-    /// SoF time from a sample (Trinet wire contract): timestamp minus the
-    /// hardware frame↔IMU latch delay. Matches Android's deriveSofNs.
-    static func deriveSofNs(_ s: ImuSample) -> UInt64 {
+    /// SoF time from a sample (Trinet wire contract): on v3/v4 cameras the
+    /// trailing float is the hardware frame↔IMU latch delay, so the
+    /// Start-of-Frame time is the sample timestamp minus that delay. v5 cameras
+    /// have no such delay (the trailing float is mag_age_us), so the sample
+    /// timestamp is used as-is — never subtract mag_age. Matches Android's
+    /// deriveSofNs. Pass the batch's `version`.
+    static func deriveSofNs(_ s: ImuSample, version: Int) -> UInt64 {
+        guard version < 5 else { return s.timestampNs }
         let delay = UInt64(max(0, s.fsyncDelayUs) * 1000)
         return s.timestampNs >= delay ? s.timestampNs - delay : s.timestampNs
     }
@@ -94,7 +103,7 @@ enum TrinetSEI {
 
     private static func decodeImu(_ payload: [UInt8]) -> TrinetSEIPayload? {
         guard payload.count >= headerSize else { return nil }
-        // version = payload[16]; ignored
+        let version = Int(payload[16])
         let n      = Int(u16le(payload, 17))
         let accel  = Int(u16le(payload, 19))
         let gyro   = Int(u16le(payload, 21))
@@ -107,7 +116,7 @@ enum TrinetSEI {
             }
             i += 1
         }
-        return .imu(ImuBatch(samples: samples, accelFs: accel, gyroFs: gyro))
+        return .imu(ImuBatch(samples: samples, accelFs: accel, gyroFs: gyro, version: version))
     }
 
     private static func decodeTemp(_ payload: [UInt8]) -> TrinetSEIPayload? {

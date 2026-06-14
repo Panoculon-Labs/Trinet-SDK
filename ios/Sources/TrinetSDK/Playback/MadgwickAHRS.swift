@@ -1,10 +1,10 @@
 // MadgwickAHRS.swift — IMU-only (6-axis: gyro + accel) sensor fusion.
 //
 // Direct port of the Android SDK's MadgwickAhrs.kt. Produces an orientation
-// quaternion from gyroscope + accelerometer. No magnetometer (the ICM-20948's
-// mag is disabled in firmware), so yaw drifts slowly but pitch/roll are
-// gravity-locked and stable. Sebastian Madgwick's IMU update (2010); beta
-// tuned for the ICM-20948 @ 562 Hz.
+// quaternion from gyroscope + accelerometer only (the magnetometer, when a
+// recording has one, is not fed into this fusion), so yaw drifts slowly but
+// pitch/roll are gravity-locked and stable. Sebastian Madgwick's IMU update
+// (2010); beta tuned for the Trinet camera's nominal IMU rate.
 
 import Foundation
 

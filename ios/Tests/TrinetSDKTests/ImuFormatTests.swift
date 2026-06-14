@@ -51,6 +51,43 @@ final class ImuFormatTests: XCTestCase {
         XCTAssertEqual(off, -987_654_321)
     }
 
+    func testImuV5HeaderAndMagAge() throws {
+        // A v5 sidecar header: version byte = 5, flags has the magnetometer bit
+        // (0x02) set and the frame-sync bit (0x01) clear.
+        let h = ImuFileWriter.Header(
+            sampleRateHz: 400,
+            accelFs: 2, gyroFs: 3,
+            startTimeNs: 0, videoStartNs: 0,
+            fsyncEnabled: false,
+            deviceId: Data(count: 16),
+            iosHostOffsetNs: 0,
+            version: 5,
+            magPresent: true)
+        let blob = ImuFileWriter.serialize(header: h)
+        XCTAssertEqual(blob.count, 64)
+        XCTAssertEqual(blob.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 8, as: UInt32.self) }, 5)
+        let flags = blob.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 36, as: UInt32.self) }
+        XCTAssertEqual(flags & 0x02, 0x02)   // magnetometer present
+        XCTAssertEqual(flags & 0x01, 0x00)   // no frame-sync delay on v5
+
+        // On v5, the trailing float reads back as mag_age_us (same slot as the
+        // v3/v4 frame-sync delay).
+        let s = ImuSample(timestampNs: 100, accel: .init(0, 0, 9.81), gyro: .zero,
+                          mag: .init(40, -20, 60), fsyncDelayUs: 1800)
+        var bytes = Data(); s.encode(into: &bytes)
+        let decoded = ImuSample.decode(from: bytes)
+        XCTAssertEqual(decoded?.magAgeUs, 1800, accuracy: 1e-3)
+    }
+
+    func testDeriveSofIsVersionAware() throws {
+        // v4: SoF = timestamp - frame-sync delay. v5: never subtract (the
+        // trailing float is mag_age_us, not a frame-sync delay).
+        let s = ImuSample(timestampNs: 10_000_000, accel: .zero, gyro: .zero,
+                          fsyncDelayUs: 2000)   // 2000 µs = 2_000_000 ns
+        XCTAssertEqual(TrinetSEI.deriveSofNs(s, version: 4), 8_000_000)
+        XCTAssertEqual(TrinetSEI.deriveSofNs(s, version: 5), 10_000_000)
+    }
+
     func testImuTelemetryDecode() throws {
         // Synthesize the same packet shape the firmware emits.
         var d = Data()

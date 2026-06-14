@@ -27,7 +27,9 @@ data class ImuSample(
     val tempC: Float,           // °C
     val quatXyzw: FloatArray,   // [x, y, z, w] — reserved; compute orientation yourself
     val linAccel: FloatArray,   // [x, y, z] — reserved
-    val fsyncDelayUs: Float,    // µs between the frame-sync pulse and this sample
+    val fsyncDelayUs: Float,    // v3/v4: µs between the frame-sync pulse and this sample
+    // magAgeUs (v5): µs from this sample back to the magnetometer reading — a typed
+    // view of the same trailing float as fsyncDelayUs (only one applies per recording)
 )
 ```
 
@@ -36,11 +38,12 @@ data class ImuSample(
 | `timestampNs` | ns | Device monotonic capture time. Use this for IMU↔IMU spacing and IMU↔frame alignment. |
 | `accel` | m/s² | 3-axis, **gravity included** (so a stationary device reads ≈9.81 along the up axis). |
 | `gyro` | rad/s | 3-axis angular rate. |
-| `mag` | µT | 3-axis magnetometer. |
+| `mag` | µT | 3-axis magnetometer. Live on v5 recordings; zero on older recordings whose camera had no usable magnetometer. |
 | `tempC` | °C | Sensor die temperature. |
 | `quatXyzw` | — | **Reserved.** Don't rely on it; compute orientation with [Madgwick](#orientation-fusion-madgwick). |
 | `linAccel` | — | **Reserved.** |
-| `fsyncDelayUs` | µs | Time from the hardware frame-sync pulse to this sample. Used to derive the frame's start-of-frame timestamp for video alignment. |
+| `fsyncDelayUs` | µs | (v3/v4) Time from the hardware frame-sync pulse to this sample. Used to derive the frame's start-of-frame timestamp for video alignment. |
+| `magAgeUs` | µs | (v5) Age of the magnetometer reading carried in `mag`: µs from this sample's timestamp back to that reading. Same trailing float as `fsyncDelayUs` — only one applies, per the recording's version. |
 
 The camera emits **raw** accelerometer, gyroscope, and magnetometer only —
 `quatXyzw`/`linAccel` are reserved fields that read as identity/zero. Compute orientation

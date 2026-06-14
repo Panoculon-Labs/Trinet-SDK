@@ -105,9 +105,12 @@ final class RecordSink: @unchecked Sendable {
         frameNumber += 1
     }
 
-    /// Called from the IMU telemetry task.
-    func writeIMU(_ samples: [ImuSample]) {
+    /// Called from the IMU telemetry task. `version` is the TRIMU format the
+    /// live stream is carrying (from the SEI), so the sidecar header is stamped
+    /// v5/magnetometer rather than v4/frame-sync when recording a v5 camera.
+    func writeIMU(_ samples: [ImuSample], version: Int = 4) {
         lock.lock(); defer { lock.unlock() }
+        imu?.note(version: version)
         try? imu?.append(samples: samples)
     }
 

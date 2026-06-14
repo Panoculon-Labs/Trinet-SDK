@@ -11,7 +11,7 @@ public struct VtsEntry: Sendable, Hashable {
     public var sofTimestampNs: UInt64
     /// VENC sequence number for the encoded packet.
     public var vencSeq: UInt32
-    /// VENC PTS in microseconds (Rockchip-derived CLOCK_MONOTONIC).
+    /// Encoder PTS in microseconds (device-derived CLOCK_MONOTONIC).
     public var vencPtsUs: UInt64
 
     public init(frameNumber: UInt32, sofTimestampNs: UInt64,
