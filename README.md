@@ -23,7 +23,7 @@ status LED confirms the active mode.
 
 | Platform | How it's distributed | Start here |
 |---|---|---|
-| **Android** | Prebuilt **AAR** (`com.panoculon:trinet-sdk:0.1.8`) + docs; demo APKs under [Releases](../../releases) | this page ↓ |
+| **Android** | Prebuilt **AAR** (`com.panoculon:trinet-sdk:0.2.0`) + docs; demo APKs under [Releases](../../releases) | this page ↓ |
 | **iOS** | **Swift source** via Swift Package Manager | [**ios/README.md**](ios/README.md) |
 
 > The rest of this page documents the **Android** SDK. For **iOS**, see
@@ -69,7 +69,7 @@ dependency, but the Compose dependencies are only required if you use the `ui` p
 
 ## Install
 
-The AAR lives in [`aar/`](aar/) (Maven coordinates `com.panoculon:trinet-sdk:0.1.8`).
+The AAR lives in [`aar/`](aar/) (Maven coordinates `com.panoculon:trinet-sdk:0.2.0`).
 Add it as a flat-dir dependency. Because a flat AAR carries no POM, you must declare the
 SDK's runtime dependencies yourself.
 
@@ -95,7 +95,7 @@ android {
 }
 
 dependencies {
-    implementation(":trinet-sdk-0.1.8@aar")
+    implementation(":trinet-sdk-0.2.0@aar")
 
     // Transitive runtime dependencies the SDK expects on the classpath:
     implementation("androidx.core:core-ktx:1.13.1")
@@ -253,7 +253,7 @@ Swift Package Manager (zero external dependencies). On iOS the camera connects a
 ```swift
 // Consumer Package.swift
 dependencies: [
-    .package(url: "https://github.com/Panoculon-Labs/Trinet-SDK", from: "0.1.8"),
+    .package(url: "https://github.com/Panoculon-Labs/Trinet-SDK", from: "0.2.0"),
 ],
 targets: [
     .target(name: "MyApp", dependencies: [

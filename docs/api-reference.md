@@ -82,10 +82,21 @@ one while streaming. Call off the main thread.):
 | `setMode` | `(mode: String): Boolean` | Persistent start-up mode (`"uvc"` for this app, `"ncm"` for the iOS streaming path). The camera restarts into the new mode. |
 | `getMode` | `(): String?` | Current persistent start-up mode. |
 | `setCalibration` / `getCalibration` | `(CalibrationData): Boolean` / `(): CalibrationData?` | Store / read the camera+IMU calibration on the device (intrinsics, distortion, extrinsics, time-shift). |
+| `getThermal` | `(): ThermalStatus?` | Camera die temperature + a latched `paused` flag. Poll ~1 Hz while recording; when `paused` is true the camera is too hot — stop recording (and preview) and resume when it clears. `null` on older firmware. |
 
 > Bitrate and rate-control changes persist on the camera and survive a power
 > cycle; the camera restarts (~15 s) to apply them, and the SDK reconnects
 > automatically.
+
+**Calibration upload.** `CalibrationData.fromCalibrationJson(json)` parses a
+Kalibr / Trinet-Calibration `calibration.json` into a `CalibrationData` you can
+`setCalibration(...)`. (The demo app's file picker accepts either a
+`calibration.json` or a ready 164-byte `.bin` blob.)
+
+**Thermal pause.** `getThermal()` returns `ThermalStatus(tempC, state, paused)`.
+The demo Record screen polls it while recording and auto-pauses/resumes recording
+on `paused` (showing a "cooling down" banner) — mirroring the SD recorder's
+pause/cool/resume on the streaming path.
 
 ---
 
