@@ -69,6 +69,35 @@ Owns a granted USB connection.
 | `open` | `(config: SessionConfig = SessionConfig()): TrinetSession` | Open the device + init the native layer, returning a streaming session. **Call on a worker thread.** Throws if permission isn't held or the native open fails. |
 | `close` | `()` | Release the USB handle (and the session). |
 
+**Camera controls** (all run over the existing connection — never open a second
+one while streaming. Call off the main thread.):
+
+| Member | Signature | Description |
+|---|---|---|
+| `setLed` | `(red: Boolean, green: Boolean, blue: Boolean): Boolean` | Set the status-LED channels (on/off per channel; no brightness). |
+| `setBitrate` | `(kbps: Int): Boolean` | Set the video bitrate target (256–30000 kbps). Saved on the camera and applied on the next stream; the camera briefly restarts to apply it. |
+| `getBitrate` | `(): Int` | Current bitrate target (kbps), or -1. |
+| `setRcMode` | `(mode: Int): Boolean` | Rate-control mode: 1 = CBR (constant quality), 2 = AVBR (clamps the average to the target). Saved + applied on restart. |
+| `getRcMode` | `(): Int` | Current rate-control mode (0 = default, 1 = CBR, 2 = AVBR), or -1. |
+| `setMode` | `(mode: String): Boolean` | Persistent start-up mode (`"uvc"` for this app, `"ncm"` for the iOS streaming path). The camera restarts into the new mode. |
+| `getMode` | `(): String?` | Current persistent start-up mode. |
+| `setCalibration` / `getCalibration` | `(CalibrationData): Boolean` / `(): CalibrationData?` | Store / read the camera+IMU calibration on the device (intrinsics, distortion, extrinsics, time-shift). |
+| `getThermal` | `(): ThermalStatus?` | Camera die temperature + a latched `paused` flag. Poll ~1 Hz while recording; when `paused` is true the camera is too hot — stop recording (and preview) and resume when it clears. `null` on older firmware. |
+
+> Bitrate and rate-control changes persist on the camera and survive a power
+> cycle; the camera restarts (~15 s) to apply them, and the SDK reconnects
+> automatically.
+
+**Calibration upload.** `CalibrationData.fromCalibrationJson(json)` parses a
+Kalibr / Trinet-Calibration `calibration.json` into a `CalibrationData` you can
+`setCalibration(...)`. (The demo app's file picker accepts either a
+`calibration.json` or a ready 164-byte `.bin` blob.)
+
+**Thermal pause.** `getThermal()` returns `ThermalStatus(tempC, state, paused)`.
+The demo Record screen polls it while recording and auto-pauses/resumes recording
+on `paused` (showing a "cooling down" banner) — mirroring the SD recorder's
+pause/cool/resume on the streaming path.
+
 ---
 
 ## Package `session`
