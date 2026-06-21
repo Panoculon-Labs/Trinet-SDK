@@ -21,6 +21,7 @@ public final class ImuHistory: ObservableObject {
     public struct Window {
         public var accel: [(t: Double, x: Float, y: Float, z: Float)] = []
         public var gyro:  [(t: Double, x: Float, y: Float, z: Float)] = []
+        public var mag:   [(t: Double, x: Float, y: Float, z: Float)] = []
         public var temp: Float = 0
     }
 
@@ -29,6 +30,10 @@ public final class ImuHistory: ObservableObject {
     @Published public private(set) var totalReceived: Int = 0
     /// Live sample rate (Hz), updated each batch.
     @Published public private(set) var rateHz: Double = 0
+    /// True once any sample with non-zero magnetometer data arrives — the mag
+    /// plot stays hidden until then so a stream without mag isn't shown as a
+    /// misleading flat-zero trace.
+    @Published public private(set) var hasMag: Bool = false
 
     public let durationSeconds: Double
     private let capacity: Int          // rolling-window size for the plot
@@ -48,6 +53,8 @@ public final class ImuHistory: ObservableObject {
             let t = Double(s.timestampNs) * 1e-9 - t0
             window.accel.append((t, s.accel.x, s.accel.y, s.accel.z))
             window.gyro .append((t, s.gyro.x,  s.gyro.y,  s.gyro.z))
+            window.mag  .append((t, s.mag.x,   s.mag.y,   s.mag.z))
+            if !hasMag, s.mag != .zero { hasMag = true }
         }
         window.temp = samples.last!.tempC
 
@@ -68,12 +75,16 @@ public final class ImuHistory: ObservableObject {
         if window.gyro.count > capacity {
             window.gyro.removeFirst(window.gyro.count - capacity)
         }
+        if window.mag.count > capacity {
+            window.mag.removeFirst(window.mag.count - capacity)
+        }
     }
 
     public func reset() {
         window = Window()
         totalReceived = 0
         rateHz = 0
+        hasMag = false
         t0Ns = nil
         lastBatchTs = nil
     }
@@ -96,6 +107,13 @@ public struct ImuPlotView: View {
                        range: -3.5...3.5,
                        colors: ImuAxis.colors,
                        labels: ImuAxis.labels)
+            if history.hasMag {
+                sensorPlot(title: "Magnetometer (µT)",
+                           samples: history.window.mag,
+                           range: -100...100,
+                           colors: ImuAxis.colors,
+                           labels: ImuAxis.labels)
+            }
             HStack {
                 Text("T: \(history.window.temp, specifier: "%.1f") °C")
                     .font(.caption.monospacedDigit())

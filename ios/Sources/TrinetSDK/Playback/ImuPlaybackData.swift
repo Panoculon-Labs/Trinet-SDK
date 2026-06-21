@@ -15,6 +15,11 @@ public struct ImuPlaybackData: Sendable {
     public let orientations: [Quaternion]   // one per sample
     public let t0Ns: UInt64
     public let sampleRateHz: Int
+    /// True if any sample carries live magnetometer data (v5 recordings).
+    /// Computed once at load so the UI can show a mag plot only when there's
+    /// data, rather than a misleading flat-zero trace. Older recordings (no mag)
+    /// are all-zero → false.
+    public let hasMag: Bool
 
     public var isEmpty: Bool { samples.isEmpty }
 
@@ -92,12 +97,12 @@ public struct ImuPlaybackData: Sendable {
     /// Load + precompute. Returns empty data if the file is missing/too short.
     public static func load(url: URL) -> ImuPlaybackData {
         guard let bytes = try? Data(contentsOf: url) else {
-            return ImuPlaybackData(samples: [], orientations: [], t0Ns: 0, sampleRateHz: 562)
+            return ImuPlaybackData(samples: [], orientations: [], t0Ns: 0, sampleRateHz: 562, hasMag: false)
         }
         let headerSize = 64
         let sampleSize = ImuSample.binarySize   // 80
         guard bytes.count >= headerSize else {
-            return ImuPlaybackData(samples: [], orientations: [], t0Ns: 0, sampleRateHz: 562)
+            return ImuPlaybackData(samples: [], orientations: [], t0Ns: 0, sampleRateHz: 562, hasMag: false)
         }
         // header: magic[8], version u32 @8, sample_rate_hz u32 @12 (LE)
         let rate: Int = bytes.withUnsafeBytes { raw in
@@ -129,15 +134,16 @@ public struct ImuPlaybackData: Sendable {
             orientations.append(ahrs.q)
         }
         let t0 = samples.first?.timestampNs ?? 0
+        let hasMag = samples.contains { $0.mag != .zero }
         return ImuPlaybackData(samples: samples, orientations: orientations,
-                               t0Ns: t0, sampleRateHz: max(1, rate))
+                               t0Ns: t0, sampleRateHz: max(1, rate), hasMag: hasMag)
     }
 
     /// Extract IMU from an MP4's in-stream Trinet SEI (when there's no .imu
     /// sidecar — e.g. a shared-only file). Returns the playback data and the
     /// video origin (first frame's SoF) for device-clock alignment.
     public static func loadFromMp4(url: URL) async -> (data: ImuPlaybackData, originNs: UInt64?) {
-        let empty = ImuPlaybackData(samples: [], orientations: [], t0Ns: 0, sampleRateHz: 562)
+        let empty = ImuPlaybackData(samples: [], orientations: [], t0Ns: 0, sampleRateHz: 562, hasMag: false)
         let asset = AVURLAsset(url: url)
         guard let track = try? await asset.loadTracks(withMediaType: .video).first else {
             return (empty, nil)

@@ -23,6 +23,9 @@ public struct PlaybackImuTrackView: View {
         VStack(alignment: .leading, spacing: 8) {
             trace(title: "Accelerometer (m/s²)", range: -12...12) { $0.accel }
             trace(title: "Gyroscope (rad/s)",    range: -3.5...3.5) { $0.gyro }
+            if data.hasMag {
+                trace(title: "Magnetometer (µT)", range: -100...100) { $0.mag }
+            }
             if let s = data.sampleAtDeviceNs(centerDeviceNs) {
                 Text("T: \(s.tempC, specifier: "%.1f") °C · \(data.sampleRateHz) Hz")
                     .font(.caption2.monospacedDigit())
