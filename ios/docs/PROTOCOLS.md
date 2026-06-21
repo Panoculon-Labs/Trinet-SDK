@@ -31,8 +31,30 @@ see `InterfacePinning.swift`.
 | 8081 | HTTP  | `GET /api/device_id`    | request/response | `{device_id, product, mode}` |
 | 8081 | HTTP  | `GET /api/state`        | request/response | `{mode, recording, ready, note}` |
 | 8081 | HTTP  | `GET /api/storage`      | request/response | `{mount, present, total_bytes?, available_bytes?}` |
-| 8081 | HTTP  | `GET /api/time`         | request/response | `{clock_monotonic_ns, clock_realtime_ns}` |
-| 5557 | UDP   | sync probe / response   | bidir            | Clock-offset measurement (see below) |
+| 8081 | HTTP  | `GET /api/time`          | request/response | `{clock_monotonic_ns, clock_realtime_ns}` |
+| 8081 | HTTP  | `GET /api/thermal`       | request/response | `{state, temp_c, paused}` — host-pause signal (see below) |
+| 8081 | HTTP  | `POST /api/calibration`  | client → server  | Upload calibration blob (200-byte `application/octet-stream`) |
+| 8081 | HTTP  | `GET /api/calibration`   | request/response | Stored calibration blob (200 bytes); `404` if none |
+| 8081 | HTTP  | `POST /api/led`          | client → server  | `{r,g,b}` status-LED channels on/off (0/1; the LED has no PWM) |
+| 8081 | HTTP  | `GET /api/video/bitrate` | request/response | `{kbps}` — current encoder bitrate target |
+| 8081 | HTTP  | `POST /api/video/bitrate`| client → server  | `{kbps}` (256…30000); persisted; camera restarts (~15 s) to apply |
+| 8081 | HTTP  | `GET /api/video/rcmode`  | request/response | `{mode}` — `"cbr"` \| `"avbr"` |
+| 8081 | HTTP  | `POST /api/video/rcmode` | client → server  | `{mode}` `"cbr"`\|`"avbr"`; persisted; camera restarts to apply |
+| 8081 | HTTP  | `GET /api/mode`          | request/response | `{mode}` — persistent boot mode `"uvc"`\|`"ncm"`\|`"imu"` |
+| 8081 | HTTP  | `POST /api/mode`         | client → server  | `{mode}`; persisted; camera reboots to apply (re-enumerates) |
+| 5557 | UDP   | sync probe / response    | bidir            | Clock-offset measurement (see below) |
+
+> **Control endpoints** mirror the Android UVC extension-unit controls so both
+> transports expose the same surface (calibration store/serve, LED, encoder
+> bitrate + rate-control mode, persistent boot mode). Bitrate / rate-control /
+> mode changes are **persisted on the camera** and shared with its other
+> streaming mode; the camera restarts (and, for `mode`, reboots and
+> re-enumerates) to apply them, so the connection drops and must be re-opened.
+
+> **Thermal host-pause:** poll `GET /api/thermal` ~1 Hz while recording. When
+> `paused` latches `true` the camera is too hot — stop recording (and idle the
+> live stream so it cools), then resume when it clears back to `false`. This is
+> the streaming-mode analogue of the on-camera SD recorder's pause/resume.
 
 > **Note on IMU:** earlier firmware shipped IMU as a separate UDP telemetry
 > channel on port 5555. That channel is **removed** — IMU is now embedded
@@ -60,7 +82,7 @@ iOS-side parsing (`VideoStream.swift`):
 
 ## In-stream IMU + temperature (SEI)
 
-IMU and SoC-temperature data ride inside the video bitstream as
+IMU and temperature data ride inside the video bitstream as
 `user_data_unregistered` SEI messages (`payload_type = 5`), dispatched by a
 16-byte UUID. A standard decoder ignores them. Reference: `TrinetSEI.swift`.
 
@@ -80,13 +102,17 @@ per message:
 | Offset | Size | Field | Notes |
 |--------|------|-------|-------|
 | 0  | 16     | UUID            | as above |
-| 16 | 1      | version         | currently 1 |
+| 16 | 1      | version         | 3–6 (LE). 6 adds the per-frame timing block below; 0 if the camera predates the version byte |
 | 17 | 2      | num_samples (N) | little-endian |
 | 19 | 2      | accel_fs        | little-endian, accel full-scale (g) |
 | 21 | 2      | gyro_fs         | little-endian, gyro full-scale (°/s) |
-| 23 | 80 × N | samples         | N × 80-byte `ImuSample` (little-endian, identical to the on-disk TRIMU001 v4 sample struct) |
+| 23 | 8      | frame_sof_ts_ns | **v6 only** — this frame's timestamp (`CLOCK_MONOTONIC` ns), mid-exposure if the mid-exposure flag is set, else raw Start-of-Frame |
+| 31 | 4      | exposure_us     | **v6 only** — applied integration time (µs), 0 if unknown |
+| 35 | 1      | timing_flags    | **v6 only** — bit0 = mid-exposure, bit1 = exposure-valid, bit2 = readout-valid |
+| 36 | 4      | readout_time_us | **v6 only** — rolling-shutter readout span (µs); per-row delay = `readout_time_us / image_height` |
+| 23 *(40 for v6)* | 80 × N | samples | N × 80-byte `ImuSample` (little-endian, identical to the on-disk TRIMU001 v5 sample struct). Samples begin at offset **40** for v6, **23** for v3–v5 |
 
-At 562 Hz IMU / 30 fps video that's ~19 samples per frame.
+At 562 Hz IMU / 30 fps video that's ~19 samples per frame (~13 at 400 Hz).
 
 ### Temperature message — UUID `54 52 49 4E 45 54 54 45 4D 50 00 01 00 00 00 00` (`"TRINETTEMP\0\1\0\0\0\0"`)
 
@@ -99,16 +125,19 @@ At 562 Hz IMU / 30 fps video that's ~19 samples per frame.
 
 ### Video↔IMU sync
 
-Each `ImuSample` carries `timestamp_ns` (device `CLOCK_MONOTONIC`) and a
-`fsync_delay_us` hardware latch delay. The **Start-of-Frame** time for the
-video frame the SEI is attached to is:
+IMU samples and video frames share one clock (the device `CLOCK_MONOTONIC`), so
+alignment needs no host-side probe.
 
-```
-sof_ns = sample.timestamp_ns − fsync_delay_us × 1000
-```
+- **v6 SEIs** carry the frame's timestamp directly in the timing block:
+  `frame_sof_ts_ns`. When the mid-exposure flag is set it is already shifted to
+  **exposure-center** (`SOF − exposure_us/2`), which is the value to use as the
+  frame time. Use `readout_time_us / image_height` as the per-row (rolling-
+  shutter) line delay if your pipeline models it.
+- **Older SEIs (v3–v5, no timing block)** have no per-frame SOF field; the SDK
+  uses the batch's first `ImuSample.timestamp_ns` as the frame time.
 
 This is what the SDK uses to PTS-align the MP4 and to write the `.vts` per-frame
-timing sidecar, yielding ~1 ms video↔IMU alignment on the device clock.
+timing sidecar.
 
 ## Sync probe (port 5557 UDP)
 
@@ -149,6 +178,6 @@ Ethernet link delay is typically < 2 ms.
 ## On-disk sidecar formats
 
 A recording is `<base>.mp4` (with IMU SEI muxed in) plus two binary sidecars:
-`<base>.imu` (TRIMU001 v4) and `<base>.vts` (TRIVTS01 v2). These match the
+`<base>.imu` (TRIMU001 v5) and `<base>.vts` (TRIVTS01 v2). These match the
 Android SDK and the Linux toolchain byte-for-byte. See
 [`../README.md`](../README.md#file-formats) for the full layout.

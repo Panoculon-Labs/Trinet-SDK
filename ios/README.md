@@ -28,7 +28,7 @@ you depend on the repo directly:
 ```swift
 // Consumer Package.swift
 dependencies: [
-    .package(url: "https://github.com/Panoculon-Labs/Trinet-SDK", from: "0.1.6"),
+    .package(url: "https://github.com/Panoculon-Labs/Trinet-SDK", from: "0.2.0"),
 ],
 targets: [
     .target(name: "MyApp", dependencies: [
@@ -38,7 +38,7 @@ targets: [
 ```
 
 In Xcode: **File → Add Package Dependencies…** → enter the repo URL → **Up to
-Next Major `0.1.6`** → add the **TrinetSDK** product.
+Next Major `0.2.0`** → add the **TrinetSDK** product.
 
 `import TrinetSDK` and you're set.
 
@@ -169,9 +169,29 @@ func setLocalConfig(_ c: DeviceConfig)
 func storage() async throws -> DeviceAPI.StorageResponse
 func state()   async throws -> DeviceAPI.StateResponse
 func time()    async throws -> DeviceAPI.TimeResponse
+func thermal() async throws -> DeviceAPI.ThermalResponse
 func syncProbe(samples: Int = 10) async throws -> SyncCoordinator.Offset
 func liveSession() async -> TrinetLiveSession
+
+// Device controls (0.2.0)
+func setCalibration(_ blob: CalibrationBlob) async throws
+func getCalibration() async throws -> CalibrationBlob?     // nil if none stored
+func setLed(r: Bool, g: Bool, b: Bool) async throws        // on/off — no PWM
+func setBitrate(kbps: Int) async throws                    // persisted; camera restarts
+func bitrate() async throws -> Int
+func setRateControlMode(_ mode: String) async throws       // "cbr" | "avbr"
+func rateControlMode() async throws -> String
+func currentMode() async throws -> String                  // "uvc" | "ncm" | "imu"
+func setMode(_ mode: String) async throws                  // persisted; camera reboots
 ```
+
+`thermal()` returns `{state, temp_c, paused}`. Poll it ~1 Hz while recording and
+stop/resume on `paused` to let the camera cool (the reference app does this).
+`setCalibration`/`getCalibration` round-trip a `CalibrationBlob` (camera + IMU
+intrinsics/extrinsics, biases, noise model, and calibration-quality metrics);
+the camera stores the blob opaquely and serves it back. Bitrate / rate-control /
+mode changes are **persisted on the camera** and cause it to restart (and, for
+`setMode`, re-enumerate), so the connection drops and must be re-opened.
 
 ### `TrinetLiveSession` (final class)
 
@@ -237,22 +257,27 @@ Android SDK and the Linux toolchain, so parsers are shared):
 
 ```
 <base>.mp4    # H.264/H.265, IMU SEI muxed in (self-contained, like the UVC path)
-<base>.imu    # TRIMU001 v4 — 64-byte header + 80-byte samples
+<base>.imu    # TRIMU001 v5 — 64-byte header + 80-byte samples
 <base>.vts    # TRIVTS01 v2 — 32-byte header + 24-byte per-frame entries
 ```
 
-### `<base>.imu` — TRIMU001 v4
+### `<base>.imu` — TRIMU001 v5
+
+The 80-byte sample layout is identical across format versions 3/4/5; only the
+trailing float's meaning differs — frame-sync delay on v3/v4, magnetometer
+sample age on v5 (which also carries live magnetometer data). The reader
+accepts all three; current cameras write v5.
 
 ```
 header (64 bytes)            sample (80 bytes, little-endian)
   magic[8]  "TRIMU001"         timestamp_ns    uint64
-  version   uint32 (=4)        accel[3]        float32  (m/s², incl. gravity)
+  version   uint32 (=5)        accel[3]        float32  (m/s², incl. gravity)
   sample_rate_hz uint32        gyro[3]         float32  (rad/s)
-  accel_fs  uint16             mag[3]          float32  (µT)
+  accel_fs  uint16             mag[3]          float32  (µT, live in v5)
   gyro_fs   uint16             temp_c          float32
   start_time_ns  uint64        quat_xyzw[4]    float32  (reserved — use Madgwick)
   video_start_ns uint64        lin_accel[3]    float32  (reserved)
-  flags     uint32             fsync_delay_us  float32
+  flags     uint32             mag_age_us      float32  (v5; fsync_delay_us on v3/v4)
   reserved[…]
 ```
 
@@ -352,7 +377,7 @@ one-line config file on the camera's SD card.
 
 ## Versioning
 
-`TrinetSDK.version` — currently **`0.1.6`**, tracking the git tag. Bump on
+`TrinetSDK.version` — currently **`0.2.0`**, tracking the git tag. Bump on
 on-disk-format changes, wire-protocol changes, or non-additive API changes. The
 Android SDK is versioned independently; both share the same on-disk and
 wire formats. Release notes are published under [**Releases**](../../releases).

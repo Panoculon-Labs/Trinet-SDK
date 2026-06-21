@@ -9,23 +9,20 @@ import SwiftUI
 import TrinetSDK
 
 struct SettingsView: View {
-    @EnvironmentObject var device: DeviceViewModel
-
     var body: some View {
         NavigationStack {
             Form {
                 Section {
-                    Picker("Encoding", selection: $device.codec) {
-                        ForEach(VideoCodec.allCases) { c in
-                            Text(c.displayName).tag(c)
-                        }
+                    HStack {
+                        Text("Encoding")
+                        Spacer()
+                        Text("H.264 (AVC)").foregroundColor(.secondary)
                     }
-                    .pickerStyle(.segmented)
-                    .accessibilityLabel("Video encoding")
+                    .accessibilityElement(children: .combine)
                 } header: {
                     Text("Video encoding")
                 } footer: {
-                    Text("H.264 is the default. Switch to H.265 (HEVC) for smaller files at the same quality. The camera must be running firmware that streams the selected codec; changing this restarts the live preview.")
+                    Text("Recordings use H.264 (AVC) — hardware-decodable on every phone, and the camera's default. H.265 selection has been removed.")
                 }
             }
             .navigationTitle("Settings")

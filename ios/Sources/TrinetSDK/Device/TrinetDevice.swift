@@ -87,6 +87,81 @@ public actor TrinetDevice {
     public func storage() async throws -> DeviceAPI.StorageResponse { try await api.storage() }
     public func state()   async throws -> DeviceAPI.StateResponse   { try await api.state() }
     public func time()    async throws -> DeviceAPI.TimeResponse    { try await api.time() }
+    /// Camera internal temperature + a host-pause signal — poll while recording and
+    /// pause/resume on `.paused`. See `DeviceAPI.thermal()`.
+    public func thermal() async throws -> DeviceAPI.ThermalResponse { try await api.thermal() }
+
+    // MARK: - Device control (calibration / LED / bitrate)
+
+    /// Last calibration set or fetched from the camera.
+    public private(set) var calibration: CalibrationBlob? = nil
+
+    /// Upload calibration to the camera; it stores the blob and serves it back.
+    public func setCalibration(_ blob: CalibrationBlob) async throws {
+        try await api.setCalibration(blob.encode())
+        self.calibration = blob
+    }
+
+    /// Fetch the camera's stored calibration, or nil if none is stored.
+    public func getCalibration() async throws -> CalibrationBlob? {
+        do {
+            let blob = CalibrationBlob.decode(from: try await api.getCalibration())
+            self.calibration = blob
+            return blob
+        } catch DeviceAPI.APIError.http(404) {
+            self.calibration = nil
+            return nil
+        }
+    }
+
+    /// Set the status LED channels on/off (no brightness — hardware has no PWM).
+    public func setLed(r: Bool, g: Bool, b: Bool) async throws {
+        try await api.setLed(r: r, g: g, b: b)
+    }
+
+    /// Set the encoder bitrate target (kbps). The value is persisted on the
+    /// camera and shared with its other streaming mode; the camera restarts
+    /// (~15 s) to apply it and re-enumerates, so this handle is briefly
+    /// unreachable afterwards. Survives a power cycle. `connected` is cleared
+    /// locally — treat as fire-and-reconnect.
+    public func setBitrate(kbps: Int) async throws {
+        try await api.setBitrate(kbps: kbps)
+        self.connected = false
+    }
+
+    /// The camera's current encoder bitrate target (kbps).
+    public func bitrate() async throws -> Int {
+        try await api.bitrate().kbps
+    }
+
+    /// Set the rate-control mode ("cbr" | "avbr"). CBR holds image quality;
+    /// AVBR clamps the average to the target bitrate. Persisted and shared with
+    /// the camera's other streaming mode; the camera restarts to apply it (same
+    /// re-enumeration as `setBitrate`). `connected` is cleared locally.
+    public func setRateControlMode(_ mode: String) async throws {
+        try await api.setRateControlMode(mode)
+        self.connected = false
+    }
+
+    /// The camera's current rate-control mode ("cbr" | "avbr").
+    public func rateControlMode() async throws -> String {
+        try await api.rateControlMode().mode
+    }
+
+    /// The camera's current persistent boot mode ("uvc" | "ncm" | "imu").
+    public func currentMode() async throws -> String {
+        try await api.mode().mode
+    }
+
+    /// Switch the persistent boot mode ("uvc" | "ncm" | "imu"). The camera
+    /// persists it and reboots to apply. Since NCM and UVC are different USB
+    /// gadgets, after switching away from "ncm" this device handle is no longer
+    /// reachable (it re-enumerates in the new mode); treat the call as fire-and-
+    /// reconnect. `connected` is cleared locally.
+    public func setMode(_ mode: String) async throws {
+        try await api.setMode(mode)
+        if mode != "ncm" { self.connected = false }
+    }
 
     // MARK: - Helpers
 

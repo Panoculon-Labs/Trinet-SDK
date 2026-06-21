@@ -28,7 +28,7 @@ public struct ImuSample: Sendable, Hashable {
     /// older recordings whose camera had no usable magnetometer.
     public var mag: SIMD3<Float>
 
-    /// IMU die temperature in °C.
+    /// IMU temperature in °C.
     public var tempC: Float
 
     /// Fused orientation quaternion (XYZW). Unused by current firmware

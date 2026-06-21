@@ -32,5 +32,5 @@ import Foundation
 public enum TrinetSDK {
     /// SDK semantic version. Bumped when the public API or wire protocol
     /// changes in a way customers can observe.
-    public static let version = "0.1.6"
+    public static let version = "0.2.0"
 }

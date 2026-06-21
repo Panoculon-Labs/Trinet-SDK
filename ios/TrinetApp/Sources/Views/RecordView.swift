@@ -14,6 +14,12 @@ struct RecordView: View {
                     previewCard
                     imuCard
                     controlsCard
+                    if vm.isThermalPaused {
+                        Label("Camera too hot — recording paused. It resumes automatically once cooled.",
+                              systemImage: "thermometer.sun.fill")
+                            .font(.caption).foregroundColor(.orange)
+                            .padding(.horizontal)
+                    }
                     if vm.currentMp4URL != nil && !vm.isRecording {
                         Label("Saved to Library", systemImage: "checkmark.circle.fill")
                             .font(.caption).foregroundColor(.green)
@@ -51,7 +57,14 @@ struct RecordView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 12))
             } else {
                 VStack(spacing: 6) {
-                    if device.selected == nil {
+                    if vm.isThermalPaused {
+                        Image(systemName: "thermometer.sun.fill")
+                            .font(.system(size: 36))
+                            .foregroundColor(.orange)
+                        Text("Cooling down… \(vm.thermalTempC)°C")
+                            .foregroundColor(.white.opacity(0.8))
+                            .font(.caption)
+                    } else if device.selected == nil {
                         Image(systemName: "video.slash")
                             .font(.system(size: 36))
                             .foregroundColor(.white.opacity(0.6))

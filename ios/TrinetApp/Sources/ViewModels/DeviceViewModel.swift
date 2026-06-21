@@ -29,16 +29,11 @@ final class DeviceViewModel: ObservableObject {
     @Published var isScanning: Bool = false
     @Published var lastError: String?
 
-    /// User-selected video encoding (Settings). Defaults to H.264 to match the
-    /// firmware default; persisted so the choice survives relaunches. Changing
-    /// it makes the live session request the matching `/live.<codec>` endpoint.
-    @Published var codec: VideoCodec = DeviceViewModel.loadCodec() {
-        didSet { UserDefaults.standard.set(codec.rawValue, forKey: Self.codecKey) }
-    }
-    private static let codecKey = "trinet.encoding"
-    private static func loadCodec() -> VideoCodec {
-        VideoCodec(rawValue: UserDefaults.standard.string(forKey: codecKey) ?? "") ?? .h264
-    }
+    /// Video encoding is fixed to H.264 (AVC): it's the firmware default and is
+    /// hardware-decodable everywhere. H.265 selection was removed from the app
+    /// (the SDK still decodes H.265 streams/recordings for back-compat). The live
+    /// session requests `/live.h264`.
+    @Published var codec: VideoCodec = .h264
 
     private let discovery = TrinetDiscovery()
 
