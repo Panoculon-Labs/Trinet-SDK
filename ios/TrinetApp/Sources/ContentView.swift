@@ -14,6 +14,9 @@ struct ContentView: View {
             LibraryView()
                 .tabItem { Label("Library", systemImage: "folder") }
 
+            ControlsView()
+                .tabItem { Label("Controls", systemImage: "slider.horizontal.3") }
+
             SettingsView()
                 .tabItem { Label("Settings", systemImage: "gear") }
         }
