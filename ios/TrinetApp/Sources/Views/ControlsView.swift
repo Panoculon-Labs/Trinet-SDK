@@ -126,7 +126,7 @@ struct ControlsView: View {
     private var bootModeSection: some View {
         Section {
             HStack {
-                ForEach(["uvc", "ncm", "imu"], id: \.self) { m in
+                ForEach(["uvc", "ncm"], id: \.self) { m in
                     Button(m.uppercased()) { pendingMode = m }
                         .buttonStyle(.bordered)
                         .tint(vm.currentMode == m ? .accentColor : .secondary)
@@ -139,7 +139,7 @@ struct ControlsView: View {
         } header: {
             Text("Boot mode")
         } footer: {
-            Text("NCM streams to this iPhone app; UVC streams to the Android app; IMU records to the SD card. Switching away from NCM reboots the camera and it leaves iPhone mode.")
+            Text("NCM streams to this iPhone app; UVC streams to the Android app. Switching to UVC reboots the camera and it leaves iPhone mode — it will no longer appear here.")
         }
         .disabled(!enabled)
         .confirmationDialog(

@@ -123,6 +123,7 @@ final class RecordViewModel: ObservableObject {
             self.elapsed = 0
             self.bytesRecorded = 0
             self.isRecording = true
+            setLed(false)   // no visible capture indicator while recording
             tickerTask = Task { [weak self] in
                 while !Task.isCancelled {
                     try? await Task.sleep(nanoseconds: 250_000_000)
@@ -141,8 +142,19 @@ final class RecordViewModel: ObservableObject {
 
     func stopRecording() async {
         tickerTask?.cancel(); tickerTask = nil
+        let wasRecording = isRecording
         session?.stopRecording()   // synchronous, returns immediately
         isRecording = false
+        if wasRecording { setLed(true) }   // restore the LED now that capture stopped
+    }
+
+    /// Set all LED channels on/off over the shared device connection, best-effort
+    /// and non-blocking so it never gates record start/stop. The camera's LED is
+    /// turned off while recording (no visible capture indicator) and restored
+    /// when recording stops — matching the Android app.
+    private func setLed(_ on: Bool) {
+        guard let dev = device else { return }
+        Task { try? await dev.setLed(r: on, g: on, b: on) }
     }
 
     static var recordingsDirectory: URL {
