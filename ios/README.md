@@ -28,7 +28,7 @@ you depend on the repo directly:
 ```swift
 // Consumer Package.swift
 dependencies: [
-    .package(url: "https://github.com/Panoculon-Labs/Trinet-SDK", from: "0.2.0"),
+    .package(url: "https://github.com/Panoculon-Labs/Trinet-SDK", from: "0.2.1"),
 ],
 targets: [
     .target(name: "MyApp", dependencies: [
@@ -38,7 +38,7 @@ targets: [
 ```
 
 In Xcode: **File → Add Package Dependencies…** → enter the repo URL → **Up to
-Next Major `0.2.0`** → add the **TrinetSDK** product.
+Next Major `0.2.1`** → add the **TrinetSDK** product.
 
 `import TrinetSDK` and you're set.
 
@@ -173,7 +173,7 @@ func thermal() async throws -> DeviceAPI.ThermalResponse
 func syncProbe(samples: Int = 10) async throws -> SyncCoordinator.Offset
 func liveSession() async -> TrinetLiveSession
 
-// Device controls (0.2.0)
+// Device controls (0.2.1)
 func setCalibration(_ blob: CalibrationBlob) async throws
 func getCalibration() async throws -> CalibrationBlob?     // nil if none stored
 func setLed(r: Bool, g: Bool, b: Bool) async throws        // on/off — no PWM
@@ -377,7 +377,7 @@ one-line config file on the camera's SD card.
 
 ## Versioning
 
-`TrinetSDK.version` — currently **`0.2.0`**, tracking the git tag. Bump on
+`TrinetSDK.version` — currently **`0.2.1`**, tracking the git tag. Bump on
 on-disk-format changes, wire-protocol changes, or non-additive API changes. The
 Android SDK is versioned independently; both share the same on-disk and
 wire formats. Release notes are published under [**Releases**](../../releases).

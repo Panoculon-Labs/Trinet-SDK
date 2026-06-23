@@ -126,7 +126,7 @@ struct ControlsView: View {
     private var bootModeSection: some View {
         Section {
             HStack {
-                ForEach(["uvc", "ncm"], id: \.self) { m in
+                ForEach(["uvc", "ncm", "imu"], id: \.self) { m in
                     Button(m.uppercased()) { pendingMode = m }
                         .buttonStyle(.bordered)
                         .tint(vm.currentMode == m ? .accentColor : .secondary)
@@ -139,7 +139,7 @@ struct ControlsView: View {
         } header: {
             Text("Boot mode")
         } footer: {
-            Text("NCM streams to this iPhone app; UVC streams to the Android app. Switching to UVC reboots the camera and it leaves iPhone mode — it will no longer appear here.")
+            Text("Boot mode is how the camera starts up when powered on. NCM streams to this iPhone app; UVC streams to the Android app; IMU records video and motion to an inserted SD card. Switching away from NCM reboots the camera and it leaves iPhone mode, so it will no longer appear here.")
         }
         .disabled(!enabled)
         .confirmationDialog(
@@ -151,7 +151,9 @@ struct ControlsView: View {
             }
             Button("Cancel", role: .cancel) { pendingMode = nil }
         } message: {
-            Text("The camera reboots to apply. If you switch away from NCM it will no longer appear in this app.")
+            Text(pendingMode == "imu"
+                ? "The camera restarts in IMU recording mode and records to an inserted SD card. It leaves iPhone mode, so it won't appear in this app. To return, insert an SD card with Trinet/trinet_mode.conf set to \"mode=ncm\" and power-cycle the camera."
+                : "The camera reboots to apply. If you switch away from NCM it will no longer appear in this app.")
         }
     }
 
