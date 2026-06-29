@@ -81,6 +81,10 @@ one while streaming. Call off the main thread.):
 | `getRcMode` | `(): Int` | Current rate-control mode (0 = default, 1 = CBR, 2 = AVBR), or -1. |
 | `setMode` | `(mode: String): Boolean` | Persistent start-up mode (`"uvc"` for this app, `"ncm"` for the iOS streaming path). The camera restarts into the new mode. |
 | `getMode` | `(): String?` | Current persistent start-up mode. |
+| `setExposureRange` | `(minMs: Float, maxMs: Float): Boolean` | Set the auto-exposure time range (ms). The minimum holds the flicker-free floor; the maximum caps motion blur. Saved on the camera and applied across all modes on the next start (the camera restarts). |
+| `getExposureRange` | `(): Pair<Float, Float>?` | Current min/max exposure (ms), or null. |
+| `setMainsFrequency` | `(hz: Int): Boolean` | Set the mains / anti-flicker frequency (50 or 60). Pick by region — 60 in the Americas, 50 in Europe/Asia — to remove flicker banding from indoor lighting. Saved + applied across all modes on restart. |
+| `getMainsFrequency` | `(): Int` | Current mains frequency (50 or 60 Hz), or -1. |
 | `setCalibration` / `getCalibration` | `(CalibrationData): Boolean` / `(): CalibrationData?` | Store / read the camera+IMU calibration on the device (intrinsics, distortion, extrinsics, time-shift). |
 | `getThermal` | `(): ThermalStatus?` | Camera die temperature + a latched `paused` flag. Poll ~1 Hz while recording; when `paused` is true the camera is too hot — stop recording (and preview) and resume when it clears. `null` on older firmware. |
 
