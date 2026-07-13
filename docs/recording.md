@@ -20,6 +20,7 @@ Each recording is a single folder containing four files:
 ```
 <folder>/
   video.mp4     # H.264 video (with the SEI IMU NALs muxed through)
+                #   + an AAC audio track on v4 cameras (muxed automatically)
   imu.bin       # IMU sidecar  — per-sample accel/gyro/mag/temp + frame-sync delay
   frames.bin    # VTS sidecar  — per-frame start-of-frame timestamp + video PTS
   meta.json     # recording metadata (device, resolution, fps, codec, SDK version)
@@ -85,16 +86,38 @@ handle.stop()       // finalizes the MP4 container + flushes/closes all sidecars
 ```
 
 `start()` creates the folder and opens the writers; it throws if a recording is already
-in progress on the same recorder. `submitAccessUnit(annexB, ptsUs)` does three things
+in progress on the same recorder. `submitAccessUnit(annexB, ptsUs)` does four things
 per frame:
 
 1. Passes the access unit through to the MP4 muxer (SEI included).
 2. Decodes any Trinet IMU SEI in the access unit and appends the samples to `imu.bin`.
-3. Appends a frame entry to `frames.bin` (frame number, start-of-frame timestamp derived
+3. Decodes any Trinet **audio** SEI (v4 cameras) and feeds the AAC frames to the MP4's
+   audio track.
+4. Appends a frame entry to `frames.bin` (frame number, start-of-frame timestamp derived
    from the SEI's frame-sync delay, encoder sequence, and the video PTS).
 
 `stop()` (via the handle) flushes and closes all three writers, finalizes the MP4
 container, and writes `meta.json`.
+
+### Audio
+
+On v4 cameras, stereo AAC audio rides inside the bitstream as
+[TRINETAAC SEI](file-formats.md#in-stream-audio-sei-trinetaac). The recorder extracts
+it and muxes a **second audio track** into `video.mp4` automatically — the finished
+recording plays with sound in any media player, and **no separate muxing step is
+needed**.
+
+Details worth knowing:
+
+- The muxer start is deferred briefly so the audio track can join; if no audio arrives
+  (a pre-v4 camera), the recording starts video-only exactly as before. Frames seen
+  during the deferral are buffered, so nothing is dropped either way.
+- Audio and video are aligned on the **device clock**: the AAC frames carry device
+  timestamps on the same monotonic clock as the IMU samples and frame timestamps, so
+  A/V sync holds without any host-side estimation.
+- Microphone gain / mute / auto-gain and the sample rate are controllable over the
+  same connection — see `setAudio`, `setAudioRate` in the
+  [API reference](api-reference.md#trinetdevice).
 
 ---
 

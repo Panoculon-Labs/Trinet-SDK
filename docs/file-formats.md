@@ -3,8 +3,10 @@
 A Trinet recording is a **triple** sharing one folder: the H.264 video plus two binary
 sidecars. The same inertial data also exists *inside* the video bitstream as SEI NAL
 units — that's how the IMU travels from camera to host in the first place; the recorder
-splits it out into a sidecar. This page documents each format at the level the SDK
-readers expose, with field names, sizes, units, and timebases.
+splits it out into a sidecar. v4 cameras additionally embed **stereo AAC audio** as a
+second SEI stream ([TRINETAAC](#in-stream-audio-sei-trinetaac)), which the recorder
+muxes into the MP4 as a normal audio track. This page documents each format at the
+level the SDK readers expose, with field names, sizes, units, and timebases.
 
 All binary fields are **little-endian**.
 
@@ -13,6 +15,7 @@ All binary fields are **little-endian**.
 - [VTS sidecar (`frames.bin`)](#vts-sidecar-framesbin)
 - [meta.json](#metajson)
 - [In-stream IMU SEI](#in-stream-imu-sei)
+- [In-stream audio SEI (TRINETAAC)](#in-stream-audio-sei-trinetaac)
 - [Timebases and alignment](#timebases-and-alignment)
 
 ---
@@ -22,6 +25,8 @@ All binary fields are **little-endian**.
 ```
 <folder>/
   video.mp4    # H.264/AVC video. The SEI IMU NALs are muxed through into the stream.
+               # v4 cameras: plus a second (AAC-LC) audio track, muxed from the
+               # in-stream TRINETAAC SEI at record time.
   imu.bin      # per-sample inertial data            (magic "TRIMU001")
   frames.bin   # per-frame timestamps for alignment  (magic "TRIVTS01")
   meta.json    # human/tool-readable recording metadata
@@ -94,31 +99,37 @@ both `fsyncDelayUs` and `magAgeUs` (a typed view of the same slot).
 
 ## VTS sidecar (`frames.bin`)
 
-Magic `TRIVTS01`, current version **2**. "VTS" = video timestamp. One entry per recorded
-frame; it ties each frame to the inertial timeline and to the video PTS.
+Magic `TRIVTS01`, current version **4**. "VTS" = video timestamp. One entry per recorded
+frame; it ties each frame to the inertial timeline and to the video PTS. The SDK writer
+emits v4 entries; the reader decodes v2 and v4.
 
 ### Header (32 bytes)
 
 | Offset | Size | Field | Notes |
 |---:|---:|---|---|
 | 0 | 8 | `magic` | ASCII `"TRIVTS01"` |
-| 8 | 4 | `version` | `2` |
+| 8 | 4 | `version` | `2` or `4` (selects the entry size) |
 | 12 | 4 | `frame_rate_milli` | fps × 1000 (e.g. `30000`) |
 | 16 | 16 | `reserved` | zero |
 
 Exposed by `VtsFileReader` as `version`, `frameRateMilli`, `fps`, `entryCount`.
 
-### Entry (24 bytes, v2)
+### Entry (24 bytes v2 · 36 bytes v4)
 
 | Offset | Size | Field | Type | Notes |
 |---:|---:|---|---|---|
 | 0 | 4 | `frame_number` | uint32 | 0-based frame index |
-| 4 | 8 | `sof_timestamp_ns` | uint64 | **start-of-frame** timestamp (ns) — use this to align IMU |
+| 4 | 8 | `sof_timestamp_ns` | uint64 | frame timestamp (ns) — use this to align IMU. Start-of-frame, or exposure-centre when the `MID_EXPOSURE` flag is set |
 | 12 | 4 | `venc_seq` | uint32 | encoder sequence number |
 | 16 | 8 | `venc_pts_us` | uint64 | video presentation timestamp (µs) |
+| 24 | 4 | `exposure_us` | uint32 | **v4+** applied integration time (µs); 0 if unknown |
+| 28 | 4 | `timing_flags` | uint32 | **v4+** `0x01` MID_EXPOSURE (timestamp is exposure-centre) · `0x02` EXPOSURE_VALID · `0x04` READOUT_VALID · `0x08` FRAME_CENTERED (timestamp references the middle row of the rolling-shutter frame, not the top row) |
+| 32 | 4 | `readout_time_us` | uint32 | **v4+** rolling-shutter readout span (first row → last row, µs); per-row delay = `readout_time_us / image_height` |
 
-This maps to [`VtsEntry`](api-reference.md#vtsentry). `sof_timestamp_ns` is the
-hardware-aligned start-of-frame time used to find the matching IMU sample; `venc_pts_us`
+This maps to [`VtsEntry`](api-reference.md#vtsentry), which also provides the
+`isMidExposure` / `isFrameCentered` flag getters and `rowOffsetNs(row, imageHeight)`
+for per-row rolling-shutter reconstruction. `sof_timestamp_ns` is the
+hardware-aligned frame time used to find the matching IMU sample; `venc_pts_us`
 is the MP4 PTS used to seek the decoder.
 
 ---
@@ -134,7 +145,7 @@ appear):
   "created_at_epoch_ms": 1748090000000,
   "device": { "vendor_id": 8711, "product_id": 22, "serial": "ab12cd34..." },
   "video":  { "width": 1920, "height": 1080, "fps": 30, "codec": "h264" },
-  "sdk_version": "0.1.7"
+  "sdk_version": "0.3.0"
 }
 ```
 
@@ -165,26 +176,66 @@ bytes terminated by a final byte), a Trinet `user_data_unregistered` payload is:
 | Size | Field | Notes |
 |---:|---|---|
 | 16 | `uuid` | must equal `TRIMU_UUID` |
-| 1 | `version` | payload version |
+| 1 | `version` | payload version (v5: live mag; **v6**: adds the timing block below) |
 | 2 | `num_samples` | count of samples that follow |
 | 2 | `accel_fs` | accel full-scale code |
 | 2 | `gyro_fs` | gyro full-scale code |
-| 80 × N | `samples[]` | each a v3 `ImuSample` (same 80-byte layout as the sidecar) |
+| 8 | `frame_sof_ts_ns` | **v6+** this frame's device timestamp (ns) — exposure-centre when the `MID_EXPOSURE` flag is set, else raw start-of-frame |
+| 4 | `exposure_us` | **v6+** applied integration time (µs); 0 if unknown |
+| 1 | `timing_flags` | **v6+** same flag bits as the [VTS entry](#vts-sidecar-framesbin) (`0x01` MID_EXPOSURE · `0x02` EXPOSURE_VALID · `0x04` READOUT_VALID · `0x08` FRAME_CENTERED) |
+| 4 | `readout_time_us` | **v6+** rolling-shutter readout span (µs) |
+| 80 × N | `samples[]` | each an `ImuSample` (same 80-byte layout as the sidecar; v5+ trailing float is `mag_age_us`) |
 
-The header (UUID + version + counts) is `SeiConstants.SEI_HEADER_SIZE` = 23 bytes. The
-parser strips H.264 **emulation-prevention** bytes (`00 00 03` → `00 00`) before reading
-the payload, and ignores any SEI NAL that isn't a Trinet IMU payload.
+The header is `SeiConstants.SEI_HEADER_SIZE` = 23 bytes through v5, or
+`SEI_HEADER_SIZE_V6` = 40 bytes with the v6 timing block. The parser strips H.264
+**emulation-prevention** bytes (`00 00 03` → `00 00`) before reading the payload, and
+ignores any SEI NAL that isn't a Trinet IMU payload.
 
 `SeiImuParser.parse` returns `List<SeiImuPayload>`:
 
 ```kotlin
-data class SeiImuHeader(val version: Int, val numSamples: Int, val accelFs: Int, val gyroFs: Int)
+data class SeiImuHeader(
+    val version: Int, val numSamples: Int, val accelFs: Int, val gyroFs: Int,
+    // v6+ per-frame timing block (0 on older streams):
+    val frameSofTsNs: Long, val exposureUs: Long, val timingFlags: Int, val readoutTimeUs: Long,
+)
 data class SeiImuPayload(val header: SeiImuHeader, val samples: List<ImuSample>)
 ```
 
 If you need lower-level Annex B handling (start-code scanning, emulation-prevention
 add/remove), the `NalParser` object exposes `splitNalUnits`, `removeEmulationPrevention`,
 and `addEmulationPrevention`.
+
+---
+
+## In-stream audio SEI (TRINETAAC)
+
+**v4 cameras** embed stereo **AAC-LC audio** in the same H.264 bitstream, as a second
+`user_data_unregistered` SEI stream identified by the 16-byte
+`SeiConstants.TRINET_AAC_UUID` ("TRINETAAC"). Older cameras never emit it, and consumers
+that don't recognise the UUID skip it — the scheme is fully backward compatible.
+
+Payload layout (after the UUID):
+
+| Size | Field | Notes |
+|---:|---|---|
+| 1 | `version` | `1` |
+| 4 | `sample_rate` | Hz (e.g. `44100`; configurable 16000/44100/48000) |
+| 1 | `channels` | e.g. `2` |
+| 2 | `num_frames` | AAC frames that follow |
+| per frame: | | |
+| 8 | `pts_us` | device `CLOCK_MONOTONIC` µs — **the same clock** as the IMU sample timestamps and `frame_sof_ts_ns`, so audio aligns to video/IMU directly |
+| 2 | `len` | ADTS frame length |
+| len | `adts` | one self-describing ADTS AAC-LC frame |
+
+Decode with `SeiAudioParser.parse(annexB)` → `List<SeiAudioPayload>` (each with
+`List<AacFrame>`). Consumers:
+
+- **Live**: feed `AacFrame.adts` to `AudioPlayer` (or just drop the `LiveAudio`
+  composable next to `LivePreview`).
+- **Recording**: `TrinetRecorder` extracts these frames automatically and muxes a
+  second AAC track into `video.mp4` — recordings play with sound in any player, no
+  separate muxing step.
 
 ---
 
@@ -201,6 +252,9 @@ and `addEmulationPrevention`.
 - **`venc_pts_us`** is the MP4 presentation timestamp — use it to *seek the video
   decoder*, not to align IMU. The decoder paces on PTS; IMU alignment uses
   `sof_timestamp_ns`.
+
+- **`pts_us`** (per AAC audio frame, v4 cameras) is on the **same device monotonic
+  clock** as the IMU timestamps — audio, video, and IMU all share one timebase.
 
 In short: to correlate inertial data with a video frame, always go through
 `sof_timestamp_ns` (see [aligning IMU to frames](playback.md#aligning-imu-to-frames)).

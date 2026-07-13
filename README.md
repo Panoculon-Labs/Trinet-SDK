@@ -23,7 +23,7 @@ status LED confirms the active mode.
 
 | Platform | How it's distributed | Start here |
 |---|---|---|
-| **Android** | Prebuilt **AAR** (`com.panoculon:trinet-sdk:0.2.2`) + docs; demo APKs under [Releases](../../releases) | this page ↓ |
+| **Android** | Prebuilt **AAR** (`com.panoculon:trinet-sdk:0.3.0`) + docs; demo APKs under [Releases](../../releases) | this page ↓ |
 | **iOS** | **Swift source** via Swift Package Manager | [**ios/README.md**](ios/README.md) |
 
 > The rest of this page documents the **Android** SDK. For **iOS**, see
@@ -39,7 +39,11 @@ status LED confirms the active mode.
   any number of consumers (preview + recorder simultaneously).
 - **Inline IMU** — accelerometer, gyroscope, magnetometer, temperature, and a
   hardware frame-sync delay are embedded per-frame in the video bitstream and decoded
-  for you (≈500–562 Hz).
+  for you (≈400–562 Hz depending on camera generation).
+- **Embedded audio** (v4 cameras) — stereo AAC rides inside the video bitstream on the
+  same device clock as the IMU. Live preview can play it (`LiveAudio`), and recordings
+  automatically gain a second audio track — no separate muxing step. Older cameras emit
+  no audio and everything stays backward compatible.
 - **Recording** to a self-contained folder: `video.mp4` + an IMU sidecar + a
   frame-timestamp sidecar + `meta.json`.
 - **Playback** with a built-in H.264 player that paces frames, exposes the current
@@ -69,7 +73,7 @@ dependency, but the Compose dependencies are only required if you use the `ui` p
 
 ## Install
 
-The AAR lives in [`aar/`](aar/) (Maven coordinates `com.panoculon:trinet-sdk:0.2.2`).
+The AAR lives in [`aar/`](aar/) (Maven coordinates `com.panoculon:trinet-sdk:0.3.0`).
 Add it as a flat-dir dependency. Because a flat AAR carries no POM, you must declare the
 SDK's runtime dependencies yourself.
 
@@ -95,7 +99,7 @@ android {
 }
 
 dependencies {
-    implementation(":trinet-sdk-0.2.2@aar")
+    implementation(":trinet-sdk-0.3.0@aar")
 
     // Transitive runtime dependencies the SDK expects on the classpath:
     implementation("androidx.core:core-ktx:1.13.1")
@@ -197,6 +201,8 @@ val job = session.frames
     .onEach { f -> recorder.submitAccessUnit(f.annexB, f.ptsUs) }
     .flowOn(Dispatchers.IO)
     .launchIn(scope)
+// On v4 cameras the recorder also extracts the embedded AAC audio and muxes it
+// into video.mp4 as a second track automatically — nothing extra to wire.
 
 // 5. Stop.
 job.cancel()

@@ -46,7 +46,8 @@ data class Frame(val annexB: ByteArray, val ptsUs: Long)
 
 - `annexB` — one H.264 access unit in **Annex B** framing (start codes preserved),
   typically one coded picture plus its SPS/PPS and an SEI NAL carrying that frame's IMU
-  samples.
+  samples. On v4 cameras a second SEI NAL carries embedded AAC audio
+  ([TRINETAAC](file-formats.md#in-stream-audio-sei-trinetaac)).
 - `ptsUs` — capture timestamp in microseconds.
 
 ```kotlin
@@ -123,6 +124,24 @@ fun CameraView(session: TrinetSession) {
 
 `LivePreview` is purely a decode-and-display sink: it reads from `frames` but never
 controls the session. You still call `session.start()` / `session.stop()` yourself.
+
+### Live audio
+
+v4 cameras embed stereo AAC audio in the stream. To hear it, drop the `LiveAudio`
+composable next to the preview — it decodes the audio SEI off the main thread and
+plays it, tied to the composition lifecycle:
+
+```kotlin
+import com.panoculon.trinet.sdk.ui.LiveAudio
+
+LivePreview(frames = session.frames, width = config.width, height = config.height)
+LiveAudio(frames = session.frames)              // enabled = false to mute
+```
+
+On cameras without audio it simply stays silent — no version check needed. For
+non-Compose apps, use `AudioPlayer` + `SeiAudioParser` directly (see the
+[API reference](api-reference.md#package-audio)). Microphone gain/mute/AGC and
+sample rate are controllable via `device.setAudio(...)` / `device.setAudioRate(...)`.
 
 ---
 

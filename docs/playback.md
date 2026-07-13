@@ -71,6 +71,13 @@ The player also exposes the underlying sidecar readers as `player.imu`
 (`ImuFileReader`) and `player.vts` (`VtsFileReader`) if you need random access during
 playback.
 
+### Audio
+
+Recordings from v4 cameras carry an AAC audio track (`player.hasAudio`), and
+`TrinetPlayer` plays it automatically, staying aligned through pause, seek, and
+scrubbing (audio is muted while dragging and realigns on release). Recordings from
+older cameras are video-only and play exactly as before — nothing to configure.
+
 ### Surface wiring (Compose)
 
 ```kotlin
