@@ -11,6 +11,7 @@ runtime permission flow, and the discovery API.
 - [Opening a camera](#opening-a-camera)
 - [Auto-launch on attach](#auto-launch-on-attach)
 - [Lifecycle and cleanup](#lifecycle-and-cleanup)
+- [Reconnecting after USB re-enumeration](#reconnecting-after-usb-re-enumeration)
 
 ---
 
@@ -244,6 +245,70 @@ device.close()    // releases the USB handle (also closes the session)
 
 Close them in that order, and never call `close()` on both for the same handle from two
 paths — close the session, then the device, once.
+
+---
+
+## Reconnecting after USB re-enumeration
+
+**The camera re-enumerates on the USB bus a few seconds after its connection is
+closed** — including when your process is killed and Android closes the file
+descriptors for you. To the host this looks like a quick detach → re-attach: the
+`UsbDevice` object your app was holding (or grabs immediately on relaunch) goes
+stale, and any `TrinetDevice` opened from it is dead.
+
+If your app connects during that window and never re-checks the bus, it will sit
+on the dead handle forever — typically seen as an app that is force-stopped and
+relaunched failing to connect until the camera is unplugged and replugged. The
+fix is a small self-heal loop; every screen (or repository) that owns a
+connection should follow it:
+
+1. **Listen for bus changes** — register a `BroadcastReceiver` for
+   `ACTION_USB_DEVICE_ATTACHED` / `ACTION_USB_DEVICE_DETACHED` (fan the events out
+   to your connection owner; on API 33+ register with `Context.RECEIVER_EXPORTED`).
+2. **On detach: assume dead, tear down.** If `DeviceDiscovery.connectedDevices()`
+   comes back empty, the connection you hold is unusable — stop any recording,
+   `close()` the session and device, drop every cached reference, and show a
+   "connecting" state. Do **not** keep the old `TrinetDevice` around to retry.
+3. **On attach: reconnect from scratch.** Run the normal discovery → permission →
+   `open()` → `start()` flow again.
+4. **Guard the in-flight connect.** Key detail: the re-attach often arrives while
+   a first connect attempt (made against the pre-re-enumeration device) is still
+   in flight. Track the connect job itself — not just a UI "connecting" flag — and
+   let a fresh attach event cancel/supersede it. Otherwise the reconnect is
+   silently swallowed.
+
+```kotlin
+// 1. Fan out attach/detach (register in your Activity, onStart/onStop):
+val usbEvents = MutableSharedFlow<Unit>(extraBufferCapacity = 8,
+                                        onBufferOverflow = BufferOverflow.DROP_OLDEST)
+val receiver = object : BroadcastReceiver() {
+    override fun onReceive(c: Context, i: Intent) { usbEvents.tryEmit(Unit) }
+}
+
+// 2–4. In the ViewModel/repository that owns the connection:
+scope.launch {
+    usbEvents.collect {
+        val present = DeviceDiscovery.connectedDevices(context).isNotEmpty()
+        if (!present) {
+            // Camera left the bus (unplug, reboot, or re-enumeration after a
+            // connection closed): everything we hold is dead.
+            runCatching { recordingHandle?.stop() }
+            session?.close(); session = null
+            device?.close(); device = null
+            uiState.value = Connecting
+        } else if (!isStreaming) {
+            connectJob?.cancel()               // supersede a stale in-flight attempt
+            connectJob = launch { connectAndStartPreview() }
+        }
+    }
+}
+```
+
+The demo app implements exactly this on its record and settings screens (v0.3.0+),
+which is why it survives kill-and-relaunch and camera restarts (mode changes,
+bitrate/GOP applies, firmware updates) without a replug. If you keep a single
+shared connection for control calls (recommended — never open a second connection
+while streaming), invalidate that cache in step 2 as well.
 
 ---
 
