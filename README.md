@@ -31,6 +31,47 @@ status LED confirms the active mode.
 
 ---
 
+## Camera compatibility
+
+**This SDK works with every Trinet camera, including ones older than it.** Newer
+capabilities are additive: where a camera or its firmware cannot do something,
+the SDK reports that rather than failing, and you keep everything else.
+
+| | Legacy (v2) | v3 | v4 (current) |
+|---|:---:|:---:|:---:|
+| H.264 streaming, live preview, recording | ✅ | ✅ | ✅ |
+| Bulk **or** isochronous transport, chosen automatically | ✅ | ✅ | ✅ |
+| In-stream IMU (accel / gyro / temp) | ✅ | ✅ | ✅ |
+| Hardware frame-sync delay per sample | ✅ | — | — |
+| Live magnetometer (trailing float becomes `magAgeUs`) | — | ✅ | ✅ |
+| Embedded stereo audio (second AAC track in recordings) | — | — | ✅ |
+| Mid-exposure / rolling-shutter frame timing | — | — | ✅ |
+
+Firmware moves independently of the hardware generation, so a few controls
+depend on how recently a camera was updated rather than which generation it is.
+Each returns `null`, `-1` or `false` on firmware that lacks it — never a throw,
+and never a fabricated value:
+
+`getThermal` · `getGop` · `getImuStream` · `getCalibrationLock` · `getAudio` ·
+`getAudioRate` · `getFirmwareVersion` · `resetSettings`
+
+Two consequences worth designing for:
+
+- **Do not hard-code the IMU rate or the trailing float's meaning.** Read
+  `sample_rate_hz` from the sidecar header, and use
+  `SeiImuParser.deriveSofNs(sample, version)` so the frame-sync-vs-magnetometer
+  difference is handled for you.
+- **Feature-detect, don't version-detect.** Call the getter and check for
+  `null`; it is more robust than reasoning from `getGeneration()`, and it is what
+  the demo app does.
+
+Recordings are forward- and backward-compatible in both directions: the readers
+parse every sidecar version this SDK has ever written, and older readers parse
+newer files because the layouts only ever repurpose previously-zero bytes. See
+[file formats](docs/file-formats.md).
+
+---
+
 ## Features
 
 - **USB device discovery + permission flow** that handles the Android 9 → 14 quirks for
@@ -244,7 +285,9 @@ player.play()
 | [IMU](docs/imu.md) | The IMU sample model, sample rate, extracting samples live, Madgwick orientation fusion, the IMU/cube/plot UI widgets |
 | [Recording](docs/recording.md) | `TrinetRecorder`, the recording handle + state machine, the on-disk output folder |
 | [Playback](docs/playback.md) | `RecordingFolder`, `TrinetPlayer`, scrubbing, the sidecar readers, aligning IMU to frames |
-| [File formats](docs/file-formats.md) | The recording triple (`.mp4` + IMU + VTS sidecars) and the in-stream SEI-embedded IMU format |
+| [File formats](docs/file-formats.md) | The recording triple (`.mp4` + IMU + VTS sidecars), the TMF metadata embedded in the MP4, and the in-stream SEI-embedded IMU format |
+| [Transport](docs/TRANSPORT.md) | Bulk vs isochronous on Android, why iOS uses a different USB path, and what is identical across the two |
+| [IMU ↔ camera sync](docs/imu_camera_synchronization.md) | Which timestamp to align on, and why it is not the video PTS |
 | [API reference](docs/api-reference.md) | Concise per-class reference for every public type |
 
 ---

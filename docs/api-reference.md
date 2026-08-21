@@ -82,7 +82,7 @@ one while streaming. Call off the main thread.):
 | `getRcMode` | `(): Int` | Current rate-control mode (0 = default, 1 = CBR, 2 = AVBR), or -1. |
 | `setMode` | `(mode: String): Boolean` | Persistent start-up mode (`"uvc"` for this app, `"ncm"` for the iOS streaming path). The camera restarts into the new mode. |
 | `getMode` | `(): String?` | Current persistent start-up mode. |
-| `getGeneration` | `(): String?` | Camera generation code (`"v2"`…`"v5"`), or `null` on older firmware — treat `null` as `"v2"`. Map it with [`TrinetGeneration.fromCode`](#trinetgeneration). |
+| `getGeneration` | `(): String?` | Camera generation code as the camera reports it (`"v2"`, `"v3"`, `"v4"`), or `null` on older firmware — treat `null` as `"v2"`. Map it with [`TrinetGeneration.fromCode`](#trinetgeneration), minding the caveat there about codes newer than this SDK. |
 | `getFirmwareVersion` | `(): String?` | Camera firmware version (e.g. `"0.5.2"`), or `null` when the camera doesn't answer. Uses the shared connection, so it is safe to call while streaming. |
 | `resetSettings` | `(): Boolean` | Clear every host-set override and restart the camera on its shipped defaults: bitrate, GOP, rate control, mic gain/mute/AGC/sample-rate, the IMU-stream toggle, image controls, exposure range and mains frequency. Deliberately **kept**: the stored calibration and its lock, the boot mode, and the USB transport — resetting those could leave the camera somewhere the app can no longer reach it, which is not what "restore defaults" should mean. The camera disappears for ~15 s. `false` on older firmware. |
 | `setExposureRange` | `(minMs: Float, maxMs: Float): Boolean` | Set the auto-exposure time range (ms). The minimum holds the flicker-free floor; the maximum caps motion blur. Saved on the camera and applied across all modes on the next start (the camera restarts). |
@@ -320,6 +320,18 @@ v4), `sizeFor(version)`, and the timing flags `TIMING_MID_EXPOSURE = 0x01`,
 
 `enum class TrinetGeneration { LEGACY, V3, V4 }` — camera generation, with `label`
 for UI display.
+
+> **Forward-compatibility caveat.** `fromCode` maps anything it does not
+> recognise — including a generation code newer than this SDK — to `LEGACY`, and
+> `LEGACY` means "the per-sample trailing float is `fsyncDelayUs`". On a camera
+> newer than V4 that float is `magAgeUs`, so trusting `hasLiveMag` there would
+> read a magnetometer age as a frame-sync offset.
+>
+> This is only reachable if you pair this SDK with a camera generation released
+> after it. If you need to be safe against that, branch on the **format version**
+> (`SeiImuHeader.version >= 5` ⇒ live magnetometer) rather than on the enum, or
+> pin the SDK version alongside the camera. `deriveSofNs(sample, version)` already
+> does the right thing from the format version and is unaffected.
 
 | Member | Type / Signature | Description |
 |---|---|---|
