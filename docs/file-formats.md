@@ -14,6 +14,7 @@ All binary fields are **little-endian**.
 - [IMU sidecar (`imu.bin`)](#imu-sidecar-imubin)
 - [VTS sidecar (`frames.bin`)](#vts-sidecar-framesbin)
 - [meta.json](#metajson)
+- [TMF metadata in the MP4](#tmf-metadata-in-the-mp4)
 - [In-stream IMU SEI](#in-stream-imu-sei)
 - [In-stream audio SEI (TRINETAAC)](#in-stream-audio-sei-trinetaac)
 - [Timebases and alignment](#timebases-and-alignment)
@@ -27,6 +28,8 @@ All binary fields are **little-endian**.
   video.mp4    # H.264/AVC video. The SEI IMU NALs are muxed through into the stream.
                # v4 cameras: plus a second (AAC-LC) audio track, muxed from the
                # in-stream TRINETAAC SEI at record time.
+               # Also carries TMF metadata (camera identity + calibration) in
+               # moov/udta — see "TMF metadata in the MP4" below.
   imu.bin      # per-sample inertial data            (magic "TRIMU001")
   frames.bin   # per-frame timestamps for alignment  (magic "TRIVTS01")
   meta.json    # human/tool-readable recording metadata
@@ -36,6 +39,10 @@ The video is plain H.264 in an MP4 container and plays in any media player; the 
 timestamp data live in the sidecars (and redundantly inside the video's SEI). The SDK
 readers (`ImuFileReader`, `VtsFileReader`) and the SEI parser (`SeiImuParser`) are the
 canonical decoders for these formats.
+
+Since **0.4.1** the `video.mp4` also carries the camera's identity and stored
+calibration in `moov/udta`, so a clip that gets separated from its folder is
+still attributable and still usable for undistortion.
 
 ---
 
@@ -143,14 +150,67 @@ appear):
 {
   "id": "ab12cd34_recording_20260524_143000",
   "created_at_epoch_ms": 1748090000000,
-  "device": { "vendor_id": 8711, "product_id": 22, "serial": "ab12cd34..." },
+  "device": {
+    "vendor_id": 8711, "product_id": 22, "serial": "ab12cd34...",
+    "firmware_version": "0.5.2", "generation": "v4"
+  },
   "video":  { "width": 1920, "height": 1080, "fps": 30, "codec": "h264" },
-  "sdk_version": "0.3.0"
+  "sdk_version": "0.4.1",
+  "has_embedded_calibration": true
 }
 ```
 
 `device.serial` is the camera's public per-unit ID (or `null` for cameras that don't
-advertise one).
+advertise one). `firmware_version` and `generation` appear only when the camera
+answered at record time; older firmware omits them rather than guessing.
+`has_embedded_calibration` is a convenience flag — the authoritative copy is the
+`tmfc` box in the MP4, and this just saves a reader from opening the video to
+find out whether it is there.
+
+---
+
+## TMF metadata in the MP4
+
+Two boxes are folded into the MP4's `moov/udta` when the recording is finalised.
+The camera writes the same two boxes into its own on-device recordings, with the
+same names and the same schema, so one reader handles both sources.
+
+| box | contents |
+|---|---|
+| `tmfm` | UTF-8 JSON — take metadata (schema 2) |
+| `tmfc` | the camera's stored calibration blob, byte-for-byte (magic `TBLC`) |
+
+```json
+{
+  "tmf_schema": 2,
+  "source": "uvc",
+  "device_id": "ab12cd34…",
+  "fw_version": "0.5.2",
+  "hw_generation": "v4",
+  "codec": "h264",
+  "imu_version": 5,
+  "vts_version": 4,
+  "recorder": "trinet-sdk/0.4.1",
+  "drops": { "recorded": 1800, "rejected": 0 }
+}
+```
+
+- `source` is `uvc` for a recording made by this SDK, `sd` for one the camera
+  wrote itself.
+- `imu_version` is the version the live stream actually turned out to be, so it
+  always agrees with the `imu.bin` header. The two matter: they select opposite
+  meanings for the sample's trailing float (`fsync_delay_us` vs `mag_age_us`).
+- Keys are **omitted when unknown rather than guessed** — a camera on older
+  firmware that does not report its version simply has no `fw_version`, and a
+  camera with no calibration stored produces no `tmfc` box at all. Treat every
+  key as optional.
+- `tmfc` is the same blob `getCalibrationBlob()` returns; decode it with the
+  calibration tooling, or read it back through `CalibrationData`.
+
+Players ignore both boxes and `ffprobe` does not list them, which is the point —
+the file stays an ordinary MP4. **Anything that re-encodes or re-muxes the file
+drops them**, the same way it drops GoPro's GPMF, so the sidecar files remain the
+recovery path for a processed clip.
 
 ---
 

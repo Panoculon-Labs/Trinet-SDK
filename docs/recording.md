@@ -21,6 +21,7 @@ Each recording is a single folder containing four files:
 <folder>/
   video.mp4     # H.264 video (with the SEI IMU NALs muxed through)
                 #   + an AAC audio track on v4 cameras (muxed automatically)
+                #   + TMF metadata in moov/udta: camera identity + calibration
   imu.bin       # IMU sidecar  — per-sample accel/gyro/mag/temp + frame-sync delay
   frames.bin    # VTS sidecar  — per-frame start-of-frame timestamp + video PTS
   meta.json     # recording metadata (device, resolution, fps, codec, SDK version)
@@ -30,6 +31,17 @@ The folder is named `<devShort>_recording_<yyyyMMdd_HHmmss>/`, where `devShort` 
 first 8 characters of the camera's public per-unit serial. That prefix lets you sort
 recordings by physical camera in a file browser without opening `meta.json`. When the
 camera doesn't advertise a serial, the folder falls back to `recording_<ts>/`.
+
+**The MP4 is self-describing.** When the recording is finalised the SDK folds the
+camera's identity (device ID, firmware version, generation) and its stored
+calibration into the file's `moov/udta` as the `tmfm` and `tmfc` boxes. A clip
+that gets separated from its folder can therefore still say which camera shot it
+and still be undistorted. This needs nothing from you — it happens on `stop()`,
+it never fails a recording, and the boxes are invisible to players. See
+[TMF metadata in the MP4](file-formats.md#tmf-metadata-in-the-mp4).
+
+Anything that re-encodes or re-muxes the video drops those boxes, so keep the
+sidecars for a clip you intend to process.
 
 The on-disk binary layouts are documented in [file formats](file-formats.md).
 

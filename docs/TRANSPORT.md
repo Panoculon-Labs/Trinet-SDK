@@ -11,7 +11,7 @@ is identical across them.
 | | **Android** | **iOS** |
 |---|---|---|
 | USB class | **UVC** (USB Video Class) | **CDC NCM** (USB Ethernet) |
-| How the app gets bytes | libusb + libuvc, **isochronous transfers** | HTTP `GET` over **TCP/IP** |
+| How the app gets bytes | libusb + libuvc, **bulk or isochronous transfers** | HTTP `GET` over **TCP/IP** |
 | Device appears as | a camera the app opens directly | an **Ethernet** interface (Settings → Ethernet) |
 | IP stack | none | yes (DHCP lease, `172.32.x.0/24`) |
 | Control / status | n/a (UVC controls) | JSON over HTTP `:8081` |
@@ -42,7 +42,7 @@ Same camera, same encoder, same IMU — two USB descriptors.
 ```
 ┌─────────────┐   USB-C    ┌───────────────────────────────┐
 │  Trinet cam │◀──────────▶│  Android phone                 │
-│  (UVC class)│  isoc xfer │                                │
+│  (UVC class)│ bulk/isoc  │                                │
 └─────────────┘            │  libusb ── libuvc (event thd)  │
                            │        │                       │
                            │   libuvc_jni.cpp (JNI)         │
@@ -58,8 +58,9 @@ Same camera, same encoder, same IMU — two USB descriptors.
 - The device enumerates as a **UVC camera class**. The app acquires USB
   permission (`UsbManager`) and hands the file descriptor to libuvc.
 - libuvc owns its libusb context and runs an **event-handler thread**;
-  H.264/H.265 access units arrive via **isochronous USB transfers**, frame by
-  frame, with no IP stack in the path.
+  H.264/H.265 access units arrive over **bulk or isochronous USB transfers**
+  (see [Bulk vs isochronous](#bulk-vs-isochronous) below), frame by frame, with
+  no IP stack in the path.
 - The JNI shim copies each frame to Kotlin and stamps it with `CLOCK_MONOTONIC`.
 - IMU is parsed from the SEI NALs inside those same frames.
 
@@ -67,6 +68,33 @@ Android-specific requirements (Android 9–14): the app must hold `CAMERA` at th
 moment of the USB-permission request, the receiver must be `RECEIVER_EXPORTED`
 on API 33+, and the pending intent must be package-scoped for Android 14.
 Details in the Android SDK docs ([streaming](streaming.md), [IMU](imu.md)).
+
+### Bulk vs isochronous
+
+A UVC camera can deliver video over either USB transfer type, and Trinet cameras
+ship in both configurations depending on firmware. **You do not choose, and you
+do not configure anything**: the SDK reads the transfer type out of the device's
+own descriptors when the stream opens and takes the matching path. Which one you
+got is reported on `TrinetSession.health` as `StreamHealth.transport`
+(`BULK`, `ISOCHRONOUS`, or `UNKNOWN` before the first health tick).
+
+|  | **Bulk** | **Isochronous** |
+|---|---|---|
+| Bandwidth | Whatever is left on the bus; no reservation | Reserved slice of every USB frame |
+| On error | The controller retries; data waits on the wire | The packet is dropped, permanently |
+| Under load | Slows down | Corrupts |
+
+Bulk is the default on current firmware. The trade is the classic one: bulk is
+flow-controlled, so a busy phone or a marginal cable costs you latency rather
+than pixels, whereas isochronous drops whatever did not fit and never resends
+it. Some host controllers handle isochronous poorly enough to hand back
+zero-filled or spliced frames under load, which is the failure bulk avoids.
+
+Both paths are exercised and both are supported — a camera on older firmware
+that presents isochronous streams to this SDK with no change on your side.
+Corruption defences (frame budget, access-unit validation, stall detection) are
+transport-independent, and `StreamHealth` exposes per-transport counters so a
+bug report can say which path it was on.
 
 ## iOS — CDC NCM path
 
@@ -109,14 +137,18 @@ and tooling are cross-compatible:
 - **Codec:** H.264 / H.265 **Annex-B** elementary stream; parameter sets
   (SPS/PPS, +VPS for H.265) sent up front.
 - **IMU:** embedded **in-stream** as `user_data_unregistered` **SEI**
-  (UUID `TRINETIMUSEI`), ~19 samples/frame at 562 Hz / 30 fps; SoC temperature
-  as a second SEI (`TRINETTEMP`).
-- **Sync:** per-frame device **Start-of-Frame** time
-  (`sof = timestamp_ns − fsync_delay_us × 1000`) gives ~1 ms video↔IMU
-  alignment.
-- **On-disk format:** `<base>.mp4` (IMU SEI muxed in) + `<base>.imu`
-  (TRIMU001 v4) + `<base>.vts` (TRIVTS01 v2), byte-for-byte identical on both
-  platforms and with the Linux toolchain.
+  (UUID `TRINETIMUSEI`). The rate varies by camera generation (commonly 400 Hz
+  or ~562 Hz) — read the exact value from the sidecar header rather than
+  assuming one. Camera temperature rides as a second SEI (`TRINETTEMP`).
+- **Sync:** a per-frame device frame time on the same clock as the IMU samples.
+  How it is derived depends on the camera generation — older cameras carry a
+  hardware frame-sync delay to subtract, newer ones timestamp the sample
+  directly — so use `SeiImuParser.deriveSofNs(sample, version)` and let it
+  branch. Either way the result is ~1 ms video↔IMU alignment. See
+  [file formats](file-formats.md).
+- **On-disk format:** `<base>.mp4` (IMU SEI muxed in, plus TMF metadata in
+  `moov/udta`) + `<base>.imu` (TRIMU001) + `<base>.vts` (TRIVTS01),
+  byte-for-byte identical on both platforms and with the Linux toolchain.
 - **Fusion:** Madgwick 6-axis (accel + gyro) orientation, `beta = 0.1`.
 
 ## Trade-offs

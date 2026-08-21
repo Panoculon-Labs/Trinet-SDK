@@ -23,7 +23,7 @@ status LED confirms the active mode.
 
 | Platform | How it's distributed | Start here |
 |---|---|---|
-| **Android** | Prebuilt **AAR** (`com.panoculon:trinet-sdk:0.3.0`) + docs; demo APKs under [Releases](../../releases) | this page ↓ |
+| **Android** | Prebuilt **AAR** (`com.panoculon:trinet-sdk:0.4.1`) + docs; demo APKs under [Releases](../../releases) | this page ↓ |
 | **iOS** | **Swift source** via Swift Package Manager | [**ios/README.md**](ios/README.md) |
 
 > The rest of this page documents the **Android** SDK. For **iOS**, see
@@ -36,7 +36,12 @@ status LED confirms the active mode.
 - **USB device discovery + permission flow** that handles the Android 9 → 14 quirks for
   UVC camera permission so you don't have to.
 - **H.264 video streaming** over UVC, fanned out as a Kotlin `Flow` of access units to
-  any number of consumers (preview + recorder simultaneously).
+  any number of consumers (preview + recorder simultaneously). Bulk and isochronous
+  transfers are both supported and the right one is chosen from the camera's own
+  descriptors — nothing to configure, and cameras on older firmware keep working.
+- **Stream health** as a 1 Hz `Flow`: measured fps in and out, dropped/corrupt/oversize
+  counts, the negotiated transport, and stall detection for the case where the stream
+  dies silently.
 - **Inline IMU** — accelerometer, gyroscope, magnetometer, temperature, and a
   hardware frame-sync delay are embedded per-frame in the video bitstream and decoded
   for you (≈400–562 Hz depending on camera generation).
@@ -45,7 +50,12 @@ status LED confirms the active mode.
   automatically gain a second audio track — no separate muxing step. Older cameras emit
   no audio and everything stays backward compatible.
 - **Recording** to a self-contained folder: `video.mp4` + an IMU sidecar + a
-  frame-timestamp sidecar + `meta.json`.
+  frame-timestamp sidecar + `meta.json`. The MP4 itself carries the camera's identity
+  and stored calibration in `moov/udta`, so a clip separated from its folder is still
+  attributable and still usable for undistortion.
+- **Camera control** — bitrate, GOP, rate control, image controls, exposure range,
+  mains frequency, audio and the status LED, all persistent on the camera and shared
+  across every way it records. `resetSettings()` restores the shipped defaults.
 - **Playback** with a built-in H.264 player that paces frames, exposes the current
   frame's IMU sample, and supports VLC-style frame-accurate scrubbing.
 - **Madgwick orientation fusion** helper to turn the raw accel/gyro streams into an
@@ -73,7 +83,7 @@ dependency, but the Compose dependencies are only required if you use the `ui` p
 
 ## Install
 
-The AAR lives in [`aar/`](aar/) (Maven coordinates `com.panoculon:trinet-sdk:0.3.0`).
+The AAR lives in [`aar/`](aar/) (Maven coordinates `com.panoculon:trinet-sdk:0.4.1`).
 Add it as a flat-dir dependency. Because a flat AAR carries no POM, you must declare the
 SDK's runtime dependencies yourself.
 
@@ -99,7 +109,7 @@ android {
 }
 
 dependencies {
-    implementation(":trinet-sdk-0.3.0@aar")
+    implementation(":trinet-sdk-0.4.1@aar")
 
     // Transitive runtime dependencies the SDK expects on the classpath:
     implementation("androidx.core:core-ktx:1.13.1")
@@ -243,7 +253,8 @@ player.play()
 
 Prebuilt demo APKs are attached to each [GitHub Release](../../releases). The demo
 exercises the entire SDK: USB pairing, live preview, recording, a browsable library,
-frame-accurate VLC-style scrubbing, and IMU overlays.
+frame-accurate VLC-style scrubbing, IMU overlays, the full camera-settings surface
+(picture, sound, video, and restore-defaults), and over-the-air firmware update.
 
 ---
 

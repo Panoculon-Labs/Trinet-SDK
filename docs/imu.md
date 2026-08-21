@@ -53,11 +53,13 @@ from the raw streams with the Madgwick helper.
 
 ## Sample rate
 
-The camera produces inertial samples at roughly **500–562 Hz**. Each video frame's SEI
-NAL carries the batch of samples captured since the previous frame (so at 30 fps you'll
-see ~17–19 samples per frame). The exact rate is recorded in the IMU
-sidecar header (see [file formats](file-formats.md)); the typical value is
-562 Hz.
+The rate depends on the camera generation — commonly **400 Hz** or **~562 Hz**.
+Each video frame's SEI NAL carries the batch of samples captured since the
+previous frame, so at 30 fps that is roughly 13 or 19 samples per frame.
+
+**Read the rate from the sidecar header** (`sample_rate_hz`, see
+[file formats](file-formats.md)) rather than assuming one — a hard-coded 562
+silently mis-scales anything derived from sample counts on a 400 Hz camera.
 
 ---
 

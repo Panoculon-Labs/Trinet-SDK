@@ -82,12 +82,15 @@ one while streaming. Call off the main thread.):
 | `getRcMode` | `(): Int` | Current rate-control mode (0 = default, 1 = CBR, 2 = AVBR), or -1. |
 | `setMode` | `(mode: String): Boolean` | Persistent start-up mode (`"uvc"` for this app, `"ncm"` for the iOS streaming path). The camera restarts into the new mode. |
 | `getMode` | `(): String?` | Current persistent start-up mode. |
-| `getGeneration` | `(): String?` | Camera generation code (`"v2"`, `"v3"`, `"v4"`), or `null` on older firmware. Map it with [`TrinetGeneration.fromCode`](#trinetgeneration). |
+| `getGeneration` | `(): String?` | Camera generation code (`"v2"`…`"v5"`), or `null` on older firmware — treat `null` as `"v2"`. Map it with [`TrinetGeneration.fromCode`](#trinetgeneration). |
+| `getFirmwareVersion` | `(): String?` | Camera firmware version (e.g. `"0.5.2"`), or `null` when the camera doesn't answer. Uses the shared connection, so it is safe to call while streaming. |
+| `resetSettings` | `(): Boolean` | Clear every host-set override and restart the camera on its shipped defaults: bitrate, GOP, rate control, mic gain/mute/AGC/sample-rate, the IMU-stream toggle, image controls, exposure range and mains frequency. Deliberately **kept**: the stored calibration and its lock, the boot mode, and the USB transport — resetting those could leave the camera somewhere the app can no longer reach it, which is not what "restore defaults" should mean. The camera disappears for ~15 s. `false` on older firmware. |
 | `setExposureRange` | `(minMs: Float, maxMs: Float): Boolean` | Set the auto-exposure time range (ms). The minimum holds the flicker-free floor; the maximum caps motion blur. Saved on the camera and applied across all modes on the next start (the camera restarts). |
 | `getExposureRange` | `(): Pair<Float, Float>?` | Current min/max exposure (ms), or null. |
 | `setMainsFrequency` | `(hz: Int): Boolean` | Set the mains / anti-flicker frequency (50 or 60). Pick by region — 60 in the Americas, 50 in Europe/Asia — to remove flicker banding from indoor lighting. Saved + applied across all modes on restart. |
 | `getMainsFrequency` | `(): Int` | Current mains frequency (50 or 60 Hz), or -1. |
 | `setCalibration` / `getCalibration` | `(CalibrationData): Boolean` / `(): CalibrationData?` | Store / read the camera+IMU calibration on the device (intrinsics, distortion, extrinsics, time-shift). |
+| `setCalibrationBlob` / `getCalibrationBlob` | `(ByteArray): Boolean` / `(): ByteArray?` | The same calibration as raw bytes, unparsed. This is what the recorder embeds verbatim as the MP4's `tmfc` box, so a round-trip through it is byte-exact. |
 | `setCalibrationLock` / `getCalibrationLock` | `(locked: Boolean): Boolean` / `(): Boolean?` | Protect the stored calibration: while locked, `setCalibration` is rejected by the camera. Getter is `null` on older firmware. |
 | `getThermal` | `(): ThermalStatus?` | Camera die temperature + a latched `paused` flag. Poll ~1 Hz while recording; when `paused` is true the camera is too hot — stop recording (and preview) and resume when it clears. `null` on older firmware. |
 | `setGop` / `getGop` | `(frames: Int): Boolean` / `(): Int` | Keyframe interval (GOP length) in frames. Saved on the camera; the camera restarts to apply. Getter returns -1 on older firmware. |
@@ -113,14 +116,20 @@ stream, no restart):
 | `setExposureManual` | `(manual: Boolean): Boolean` | Switch auto ↔ manual exposure. |
 | `setExposureTime100us` | `(units: Int): Boolean` | Manual exposure time in 100 µs units (manual mode only). |
 
-> Bitrate and rate-control changes persist on the camera and survive a power
-> cycle; the camera restarts (~15 s) to apply them, and the SDK reconnects
-> automatically.
+> **Settings are camera-wide and persistent.** Bitrate, GOP, rate control, image
+> controls, exposure range, mains frequency and audio are stored on the camera,
+> survive a power cycle, and apply to every way the camera records — this USB
+> stream, the network streaming path, and the camera's own on-device recording.
+> Set the bitrate here and the camera's own recordings change too. Controls that
+> need a restart take ~15 s, and the SDK reconnects automatically; the image
+> controls apply live.
+>
+> `resetSettings()` puts all of that back to defaults in one call.
 
 **Calibration upload.** `CalibrationData.fromCalibrationJson(json)` parses a
 Kalibr / Trinet-Calibration `calibration.json` into a `CalibrationData` you can
 `setCalibration(...)`. (The demo app's file picker accepts either a
-`calibration.json` or a ready 164-byte `.bin` blob.)
+`calibration.json` or a ready `.bin` blob.)
 
 **Thermal pause.** `getThermal()` returns `ThermalStatus(tempC, state, paused)`.
 The demo Record screen polls it while recording and auto-pauses/resumes recording
