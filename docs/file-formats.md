@@ -155,7 +155,7 @@ appear):
     "firmware_version": "0.5.2", "generation": "v4"
   },
   "video":  { "width": 1920, "height": 1080, "fps": 30, "codec": "h264" },
-  "sdk_version": "0.4.1",
+  "sdk_version": "0.4.3",
   "has_embedded_calibration": true
 }
 ```
@@ -190,7 +190,7 @@ same names and the same schema, so one reader handles both sources.
   "codec": "h264",
   "imu_version": 5,
   "vts_version": 4,
-  "recorder": "trinet-sdk/0.4.1",
+  "recorder": "trinet-sdk/0.4.3",
   "drops": { "recorded": 1800, "rejected": 0 }
 }
 ```
