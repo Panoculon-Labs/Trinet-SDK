@@ -131,7 +131,7 @@ Exposed by `VtsFileReader` as `version`, `frameRateMilli`, `fps`, `entryCount`.
 | 16 | 8 | `venc_pts_us` | uint64 | video presentation timestamp (µs) |
 | 24 | 4 | `exposure_us` | uint32 | **v4+** applied integration time (µs); 0 if unknown |
 | 28 | 4 | `timing_flags` | uint32 | **v4+** `0x01` MID_EXPOSURE (timestamp is exposure-centre) · `0x02` EXPOSURE_VALID · `0x04` READOUT_VALID · `0x08` FRAME_CENTERED (timestamp references the middle row of the rolling-shutter frame, not the top row) |
-| 32 | 4 | `readout_time_us` | uint32 | **v4+** rolling-shutter readout span (first row → last row, µs); per-row delay = `readout_time_us / image_height` |
+| 32 | 4 | `readout_time_us` | uint32 | **v4+** rolling-shutter readout span (first row → last row, µs); per-row delay = `readout_time_us / image_height`. A global-shutter camera writes 0 with `READOUT_VALID` set |
 
 This maps to [`VtsEntry`](api-reference.md#vtsentry), which also provides the
 `isMidExposure` / `isFrameCentered` flag getters and `rowOffsetNs(row, imageHeight)`
@@ -155,7 +155,7 @@ appear):
     "firmware_version": "0.5.2", "generation": "v4"
   },
   "video":  { "width": 1920, "height": 1080, "fps": 30, "codec": "h264" },
-  "sdk_version": "0.4.3",
+  "sdk_version": "0.5.3",
   "has_embedded_calibration": true
 }
 ```
@@ -166,6 +166,23 @@ answered at record time; older firmware omits them rather than guessing.
 `has_embedded_calibration` is a convenience flag — the authoritative copy is the
 `tmfc` box in the MP4, and this just saves a reader from opening the video to
 find out whether it is there.
+
+Two optional `video` keys describe the camera (since 0.5.0 / 0.5.2):
+
+```json
+"video": { "width": 3840, "height": 1080, "fps": 30, "codec": "h264",
+           "layout": "sbs", "shutter": "global" }
+```
+
+- **`layout`** — `"sbs"` when each frame holds a stereo pair side by side (left half =
+  physically left eye = `cam0` of a stereo calibration). Absent on mono recordings,
+  exactly as before. It is derived from the frame shape, not from the camera's
+  reported generation.
+- **`shutter`** — `"global"` or `"rolling"`, as the per-frame timing SEI declared it. A
+  global-shutter camera reports its readout as a *valid zero* (`READOUT_VALID` set,
+  `readout_time_us` = 0), which is different from an unknown readout; a non-zero
+  readout means rolling. Absent when the stream never said (older firmware). The rule
+  matches Trinet-tools' `VtsData.is_global_shutter`.
 
 ---
 
@@ -190,7 +207,7 @@ same names and the same schema, so one reader handles both sources.
   "codec": "h264",
   "imu_version": 5,
   "vts_version": 4,
-  "recorder": "trinet-sdk/0.4.3",
+  "recorder": "trinet-sdk/0.5.3",
   "drops": { "recorded": 1800, "rejected": 0 }
 }
 ```
@@ -204,8 +221,10 @@ same names and the same schema, so one reader handles both sources.
   firmware that does not report its version simply has no `fw_version`, and a
   camera with no calibration stored produces no `tmfc` box at all. Treat every
   key as optional.
-- `tmfc` is the same blob `getCalibrationBlob()` returns; decode it with the
-  calibration tooling, or read it back through `CalibrationData`.
+- `tmfc` is the same blob `getCalibrationBlob()` returns (200 bytes on a mono camera,
+  300 bytes — two eyes plus the baseline — on a stereo one); decode it with the
+  calibration tooling, or with `Calibration.decodeAny(blob)`, which returns
+  `Calibration.Mono(CalibrationData)` or `Calibration.Stereo(StereoCalibrationData)`.
 
 Players ignore both boxes and `ffprobe` does not list them, which is the point —
 the file stays an ordinary MP4. **Anything that re-encodes or re-muxes the file
@@ -243,7 +262,7 @@ bytes terminated by a final byte), a Trinet `user_data_unregistered` payload is:
 | 8 | `frame_sof_ts_ns` | **v6+** this frame's device timestamp (ns) — exposure-centre when the `MID_EXPOSURE` flag is set, else raw start-of-frame |
 | 4 | `exposure_us` | **v6+** applied integration time (µs); 0 if unknown |
 | 1 | `timing_flags` | **v6+** same flag bits as the [VTS entry](#vts-sidecar-framesbin) (`0x01` MID_EXPOSURE · `0x02` EXPOSURE_VALID · `0x04` READOUT_VALID · `0x08` FRAME_CENTERED) |
-| 4 | `readout_time_us` | **v6+** rolling-shutter readout span (µs) |
+| 4 | `readout_time_us` | **v6+** rolling-shutter readout span (µs); 0 with `READOUT_VALID` set on a global-shutter camera |
 | 80 × N | `samples[]` | each an `ImuSample` (same 80-byte layout as the sidecar; v5+ trailing float is `mag_age_us`) |
 
 The header is `SeiConstants.SEI_HEADER_SIZE` = 23 bytes through v5, or

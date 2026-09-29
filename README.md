@@ -23,7 +23,7 @@ status LED confirms the active mode.
 
 | Platform | How it's distributed | Start here |
 |---|---|---|
-| **Android** | Prebuilt **AAR** (`com.panoculon:trinet-sdk:0.4.3`) + docs; demo APKs under [Releases](../../releases) | this page ↓ |
+| **Android** | Prebuilt **AAR** (`com.panoculon:trinet-sdk:0.5.3`) + docs; demo APKs under [Releases](../../releases) | this page ↓ |
 | **iOS** | **Swift source** via Swift Package Manager | [**ios/README.md**](ios/README.md) |
 
 > The rest of this page documents the **Android** SDK. For **iOS**, see
@@ -37,15 +37,17 @@ status LED confirms the active mode.
 capabilities are additive: where a camera or its firmware cannot do something,
 the SDK reports that rather than failing, and you keep everything else.
 
-| | Legacy (v2) | v3 | v4 (current) |
-|---|:---:|:---:|:---:|
-| H.264 streaming, live preview, recording | ✅ | ✅ | ✅ |
-| Bulk **or** isochronous transport, chosen automatically | ✅ | ✅ | ✅ |
-| In-stream IMU (accel / gyro / temp) | ✅ | ✅ | ✅ |
-| Hardware frame-sync delay per sample | ✅ | — | — |
-| Live magnetometer (trailing float becomes `magAgeUs`) | — | ✅ | ✅ |
-| Embedded stereo audio (second AAC track in recordings) | — | — | ✅ |
-| Mid-exposure / rolling-shutter frame timing | — | — | ✅ |
+| | Legacy (v2) | v3 | v4 (Pro Mono) | v5 (Pro Stereo) | v6 (Pro Stereo GS) |
+|---|:---:|:---:|:---:|:---:|:---:|
+| H.264 streaming, live preview, recording | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Bulk **or** isochronous transport, chosen automatically | ✅ | ✅ | ✅ | ✅ | ✅ |
+| In-stream IMU (accel / gyro / temp) | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Hardware frame-sync delay per sample | ✅ | — | — | — | — |
+| Live magnetometer (trailing float becomes `magAgeUs`) | — | ✅ | ✅ | ✅ | ✅ |
+| Embedded stereo audio (second AAC track in recordings) | — | — | ✅ | ✅ | ✅ |
+| Mid-exposure frame timing | — | — | ✅ | ✅ | ✅ |
+| Rolling-shutter readout per frame | — | — | ✅ | ✅ | — (global shutter) |
+| Two eyes in one side-by-side frame (3840×1080) | — | — | — | ✅ | ✅ |
 
 Firmware moves independently of the hardware generation, so a few controls
 depend on how recently a camera was updated rather than which generation it is.
@@ -53,7 +55,8 @@ Each returns `null`, `-1` or `false` on firmware that lacks it — never a throw
 and never a fabricated value:
 
 `getThermal` · `getGop` · `getImuStream` · `getCalibrationLock` · `getAudio` ·
-`getAudioRate` · `getFirmwareVersion` · `resetSettings`
+`getAudioRate` · `getFirmwareVersion` · `resetSettings` · `getVideoCodec` /
+`setVideoCodec` (firmware 0.5.7+) · `getWirelessBroadcast` (firmware 0.5.9+)
 
 Two consequences worth designing for:
 
@@ -97,6 +100,21 @@ newer files because the layouts only ever repurpose previously-zero bytes. See
 - **Camera control** — bitrate, GOP, rate control, image controls, exposure range,
   mains frequency, audio and the status LED, all persistent on the camera and shared
   across every way it records. `resetSettings()` restores the shipped defaults.
+- **Recording codec** — choose H.264 or H.265 for the recordings the camera writes to
+  its own memory card (`setVideoCodec`); applies from the next take, no restart. The
+  USB stream stays H.264.
+- **Stereo cameras** — the Pro Stereo carries both eyes in one side-by-side frame. Ask
+  for the wide frame with a mono fallback and the SDK negotiates whichever camera is
+  attached; `LivePreview` can show one eye at a time; recordings keep both eyes and are
+  tagged `video.layout: "sbs"`; two-eye calibration reads and uploads. See
+  [Streaming → stereo cameras](docs/streaming.md#stereo-cameras).
+- **Global-shutter stereo camera** — the Pro Stereo GS works exactly like the Pro
+  Stereo; recordings say `video.shutter: "global"` and the shutter type is exposed from
+  the stream (`SeiImuHeader.shutter`).
+- **Wireless status** — follow any number of cameras recording to their own cards over
+  Bluetooth LE, without connecting: live recording / card / take state, start and stop
+  events in UTC, a stored history, and an export that the desktop tool uses to put card
+  recordings on UTC. See [Wireless status](docs/wireless-status.md).
 - **Playback** with a built-in H.264 player that paces frames, exposes the current
   frame's IMU sample, and supports VLC-style frame-accurate scrubbing.
 - **Madgwick orientation fusion** helper to turn the raw accel/gyro streams into an
@@ -112,7 +130,7 @@ newer files because the layouts only ever repurpose previously-zero bytes. See
 |---|---|
 | Min SDK | **28** (Android 9) |
 | Bundled native ABIs | `arm64-v8a`, `armeabi-v7a`, `x86_64` |
-| Hardware | An Android device with **USB host** support (USB-C OTG) and a Trinet camera |
+| Hardware | An Android device with **USB host** support (USB-C OTG) and a Trinet camera; Bluetooth LE only for [wireless status](docs/wireless-status.md) |
 | Language | Kotlin (the public API is Kotlin-first; Java interop works but is not the primary target) |
 
 The SDK uses Jetpack Compose for its optional UI widgets and `kotlinx.coroutines`
@@ -124,7 +142,8 @@ dependency, but the Compose dependencies are only required if you use the `ui` p
 
 ## Install
 
-The AAR lives in [`aar/`](aar/) (Maven coordinates `com.panoculon:trinet-sdk:0.4.3`).
+The AAR lives in [`aar/`](aar/) as `trinet-sdk-0.5.3.aar` (Maven coordinates
+`com.panoculon:trinet-sdk:0.5.3`).
 Add it as a flat-dir dependency. Because a flat AAR carries no POM, you must declare the
 SDK's runtime dependencies yourself.
 
@@ -150,7 +169,7 @@ android {
 }
 
 dependencies {
-    implementation(":trinet-sdk-0.4.3@aar")
+    implementation(":trinet-sdk-0.5.3@aar")
 
     // Transitive runtime dependencies the SDK expects on the classpath:
     implementation("androidx.core:core-ktx:1.13.1")
@@ -204,6 +223,27 @@ Trinet camera is plugged in, add the `USB_DEVICE_ATTACHED` intent-filter plus a
     <usb-device vendor-id="8711" product-id="26" />   <!-- 0x2207 / 0x001A -->
 </resources>
 ```
+
+#### Bluetooth (wireless status only)
+
+[Wireless status](docs/wireless-status.md) listens for nearby cameras over Bluetooth
+LE. The SDK declares no Bluetooth permissions, so apps that don't use it inherit none;
+if you do, add:
+
+```xml
+<uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+
+<!-- Android 12+: scan only, never used for location. -->
+<uses-permission android:name="android.permission.BLUETOOTH_SCAN"
+    android:usesPermissionFlags="neverForLocation" />
+
+<!-- Android 11 and older. -->
+<uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+<uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
+```
+
+and request `WirelessCameraMonitor.requiredPermissions()` at runtime.
 
 Full manifest + permission walkthrough: [docs/getting-started.md](docs/getting-started.md).
 
@@ -288,6 +328,7 @@ player.play()
 | [File formats](docs/file-formats.md) | The recording triple (`.mp4` + IMU + VTS sidecars), the TMF metadata embedded in the MP4, and the in-stream SEI-embedded IMU format |
 | [Transport](docs/TRANSPORT.md) | Bulk vs isochronous on Android, why iOS uses a different USB path, and what is identical across the two |
 | [IMU ↔ camera sync](docs/imu_camera_synchronization.md) | Which timestamp to align on, and why it is not the video PTS |
+| [Wireless status](docs/wireless-status.md) | Following cameras that record to their own card over Bluetooth LE, the stored history, and exporting it to put card recordings on UTC |
 | [API reference](docs/api-reference.md) | Concise per-class reference for every public type |
 
 ---
@@ -296,8 +337,10 @@ player.play()
 
 Prebuilt demo APKs are attached to each [GitHub Release](../../releases). The demo
 exercises the entire SDK: USB pairing, live preview, recording, a browsable library,
-frame-accurate VLC-style scrubbing, IMU overlays, the full camera-settings surface
-(picture, sound, video, and restore-defaults), and over-the-air firmware update.
+frame-accurate VLC-style scrubbing, IMU overlays, stereo preview with a left/right
+eye toggle, the full camera-settings surface (picture, sound, video, recording codec,
+wireless status broadcast, and restore-defaults), wireless status screens for crews of
+cameras, and over-the-air firmware update.
 
 ---
 

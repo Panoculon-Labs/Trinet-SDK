@@ -10,6 +10,7 @@ IMU out into the sidecars.
 - [Recording a session](#recording-a-session)
 - [The recording handle and state](#the-recording-handle-and-state)
 - [Threading](#threading)
+- [Recordings on the camera's own card](#recordings-on-the-cameras-own-card)
 
 ---
 
@@ -24,7 +25,8 @@ Each recording is a single folder containing four files:
                 #   + TMF metadata in moov/udta: camera identity + calibration
   imu.bin       # IMU sidecar  — per-sample accel/gyro/mag/temp + frame-sync delay
   frames.bin    # VTS sidecar  — per-frame start-of-frame timestamp + video PTS
-  meta.json     # recording metadata (device, resolution, fps, codec, SDK version)
+  meta.json     # recording metadata (device, resolution, fps, codec, SDK version,
+                #   stereo layout and shutter type when they apply)
 ```
 
 The folder is named `<devShort>_recording_<yyyyMMdd_HHmmss>/`, where `devShort` is the
@@ -66,9 +68,17 @@ val recorder = TrinetRecorder(
 )
 ```
 
-`width`/`height`/`fps` should match the `SessionConfig` you opened the session with.
-`sampleRateHz` is the configured IMU rate recorded in the sidecar header; the recorder
-also writes the actual full-scale codes it observes in the SEI as samples arrive.
+`width`/`height`/`fps` should match what the session actually negotiated — use
+`session.negotiatedWidth` / `session.negotiatedHeight` when you opened it with a
+fallback resolution. A frame at least three times as wide as it is tall (the stereo
+cameras' 3840×1080) is recorded whole, both eyes, and tagged `video.layout: "sbs"` in
+`meta.json`; see [stereo cameras](streaming.md#stereo-cameras).
+
+`sampleRateHz` is the nominal IMU rate recorded in the sidecar header. Rather than
+hard-coding it, take it from the camera's generation:
+`TrinetGeneration.fromCode(device.getGeneration()).nominalImuRateHz` (400 Hz from v3
+on, ~562 Hz on legacy cameras). The recorder also writes the actual full-scale codes
+it observes in the SEI as samples arrive.
 
 The `DeviceMeta.serial` is the public device ID; when present it's written into both
 `meta.json` and the IMU sidecar header (decoded from the 32-char hex serial to its 16
@@ -109,7 +119,9 @@ per frame:
    from the SEI's frame-sync delay, encoder sequence, and the video PTS).
 
 `stop()` (via the handle) flushes and closes all three writers, finalizes the MP4
-container, and writes `meta.json`.
+container, and writes `meta.json`. On cameras whose stream declares its shutter type,
+`meta.json` also records `video.shutter` (`"global"` on the Pro Stereo GS,
+`"rolling"` otherwise); older firmware never says, and the key is omitted.
 
 ### Audio
 
@@ -196,6 +208,24 @@ session.frames
 When you're done, cancel the pumping job **before** `handle.stop()` so no frame races the
 finalize. Then close the session and device as usual (see
 [cleanup](getting-started.md#lifecycle-and-cleanup)).
+
+---
+
+## Recordings on the camera's own card
+
+Everything above records the USB stream on the phone. A Trinet camera can also record
+to its own memory card with no phone attached. Two SDK features concern those takes:
+
+- **Codec.** `device.setVideoCodec(VideoCodec.H265)` / `getVideoCodec()` choose how the
+  camera encodes its card recordings: `H264` (default; what most vision and dataset
+  tooling expects, and fastest to decode) or `H265` (roughly 40 % smaller files at the
+  same quality, slower to decode and less widely supported). The camera stores the
+  choice and reads it when a recording starts, so it applies from the next take with no
+  restart. The USB stream, and therefore everything `TrinetRecorder` writes, stays
+  H.264. Needs camera firmware 0.5.7 or newer; on older firmware the getter returns
+  `null` and the setter `false`.
+- **Wireless status.** Follow cameras recording to their cards over Bluetooth LE, and
+  put those recordings on UTC afterwards — see [Wireless status](wireless-status.md).
 
 ---
 

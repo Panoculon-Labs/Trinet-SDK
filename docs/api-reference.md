@@ -12,6 +12,7 @@ root: `com.panoculon.trinet.sdk`.
 - [Package `sei`](#package-sei)
 - [Package `audio`](#package-audio)
 - [Package `fusion`](#package-fusion)
+- [Package `wireless`](#package-wireless)
 - [Package `io`](#package-io)
 - [Package `ui`](#package-ui)
 
@@ -82,7 +83,7 @@ one while streaming. Call off the main thread.):
 | `getRcMode` | `(): Int` | Current rate-control mode (0 = default, 1 = CBR, 2 = AVBR), or -1. |
 | `setMode` | `(mode: String): Boolean` | Persistent start-up mode (`"uvc"` for this app, `"ncm"` for the iOS streaming path). The camera restarts into the new mode. |
 | `getMode` | `(): String?` | Current persistent start-up mode. |
-| `getGeneration` | `(): String?` | Camera generation code as the camera reports it (`"v2"`, `"v3"`, `"v4"`), or `null` on older firmware — treat `null` as `"v2"`. Map it with [`TrinetGeneration.fromCode`](#trinetgeneration), minding the caveat there about codes newer than this SDK. |
+| `getGeneration` | `(): String?` | Camera generation code as the camera reports it (`"v2"` … `"v6"`), or `null` on older firmware — treat `null` as `"v2"`. Map it with [`TrinetGeneration.fromCode`](#trinetgeneration), minding the caveat there about codes newer than this SDK. |
 | `getFirmwareVersion` | `(): String?` | Camera firmware version (e.g. `"0.5.2"`), or `null` when the camera doesn't answer. Uses the shared connection, so it is safe to call while streaming. |
 | `resetSettings` | `(): Boolean` | Clear every host-set override and restart the camera on its shipped defaults: bitrate, GOP, rate control, mic gain/mute/AGC/sample-rate, the IMU-stream toggle, image controls, exposure range and mains frequency. Deliberately **kept**: the stored calibration and its lock, the boot mode, and the USB transport — resetting those could leave the camera somewhere the app can no longer reach it, which is not what "restore defaults" should mean. The camera disappears for ~15 s. `false` on older firmware. |
 | `setExposureRange` | `(minMs: Float, maxMs: Float): Boolean` | Set the auto-exposure time range (ms). The minimum holds the flicker-free floor; the maximum caps motion blur. Saved on the camera and applied across all modes on the next start (the camera restarts). |
@@ -90,7 +91,8 @@ one while streaming. Call off the main thread.):
 | `setMainsFrequency` | `(hz: Int): Boolean` | Set the mains / anti-flicker frequency (50 or 60). Pick by region — 60 in the Americas, 50 in Europe/Asia — to remove flicker banding from indoor lighting. Saved + applied across all modes on restart. |
 | `getMainsFrequency` | `(): Int` | Current mains frequency (50 or 60 Hz), or -1. |
 | `setCalibration` / `getCalibration` | `(CalibrationData): Boolean` / `(): CalibrationData?` | Store / read the camera+IMU calibration on the device (intrinsics, distortion, extrinsics, time-shift). |
-| `setCalibrationBlob` / `getCalibrationBlob` | `(ByteArray): Boolean` / `(): ByteArray?` | The same calibration as raw bytes, unparsed. This is what the recorder embeds verbatim as the MP4's `tmfc` box, so a round-trip through it is byte-exact. |
+| `setCalibrationBlob` / `getCalibrationBlob` | `(ByteArray): Boolean` / `(): ByteArray?` | The same calibration as raw bytes, unparsed. This is what the recorder embeds verbatim as the MP4's `tmfc` box, so a round-trip through it is byte-exact. Accepts both the 200-byte mono and the 300-byte stereo blob. |
+| `getCalibrationAny` | `(): Calibration?` | The stored calibration whichever kind it is: `Calibration.Mono` or `Calibration.Stereo` (per-eye intrinsics + baseline). Use this when a stereo camera may be attached — `getCalibration()` only decodes the mono blob. See [`Calibration`](#calibration--stereocalibrationdata). |
 | `setCalibrationLock` / `getCalibrationLock` | `(locked: Boolean): Boolean` / `(): Boolean?` | Protect the stored calibration: while locked, `setCalibration` is rejected by the camera. Getter is `null` on older firmware. |
 | `getThermal` | `(): ThermalStatus?` | Camera die temperature + a latched `paused` flag. Poll ~1 Hz while recording; when `paused` is true the camera is too hot — stop recording (and preview) and resume when it clears. `null` on older firmware. |
 | `setGop` / `getGop` | `(frames: Int): Boolean` / `(): Int` | Keyframe interval (GOP length) in frames. Saved on the camera; the camera restarts to apply. Getter returns -1 on older firmware. |
@@ -98,6 +100,8 @@ one while streaming. Call off the main thread.):
 | `setAudio` | `(gainQ8: Int, muted: Boolean, agc: Boolean): Boolean` | Live microphone control (v4 cameras): linear Q8 gain (256 = 0 dB; pass ≤0 to leave the gain unchanged), mute (embedded audio emits silence), and auto-gain (while on, the manual gain is ignored). Takes effect on the next audio frame. |
 | `getAudio` | `(): AudioStatus?` | Current mic state as `AudioStatus(gainQ8, muted, agc)`, or `null` (pre-v4 firmware). |
 | `setAudioRate` / `getAudioRate` | `(hz: Int): Boolean` / `(): Int` | Audio sample rate: 16000, 44100, or 48000 Hz. Saved; the camera restarts to apply. Getter returns -1 when unavailable. |
+| `setVideoCodec` / `getVideoCodec` | `(codec: VideoCodec): Boolean` / `(): VideoCodec?` | Codec for the recordings the camera writes to **its own memory card** ([`VideoCodec`](#videocodec) `H264` / `H265`). Saved; read when a recording starts, so it applies from the next take with no restart. The USB stream stays H.264. Firmware 0.5.7+; older firmware: getter `null`, setter `false`. |
+| `setWirelessBroadcast` / `getWirelessBroadcast` | `(enabled: Boolean): Boolean` / `(): Boolean?` | Turn the [wireless status](wireless-status.md) broadcast on or off. Saved on the camera and applied **from its next boot**; on by default (Pro Mono, Pro Stereo and Pro Stereo GS on firmware 0.5.9+). Getter `null` on firmware without the control. |
 
 **Image controls** (standard UVC processing-unit controls — apply live to the
 stream, no restart):
@@ -128,8 +132,19 @@ stream, no restart):
 
 **Calibration upload.** `CalibrationData.fromCalibrationJson(json)` parses a
 Kalibr / Trinet-Calibration `calibration.json` into a `CalibrationData` you can
-`setCalibration(...)`. (The demo app's file picker accepts either a
-`calibration.json` or a ready `.bin` blob.)
+`setCalibration(...)`. For a stereo camera, `CalibrationData.packStereoJsonV2(json)`
+packs a two-eye calibration JSON (a `cameras` array, `cam0` = left eye) into the
+300-byte blob for `setCalibrationBlob(...)`; it returns `null` for a file that is not a
+stereo calibration. `CalibrationData.blobVersion(bytes)` tells a ready `.bin` apart:
+`1` (mono), `2` (stereo) or `0` (not a valid blob). (The demo app's file picker accepts
+either a `calibration.json` or a ready `.bin` blob, for both kinds of camera.)
+
+**`DeviceControls`.** `object DeviceControls` offers a subset of these controls as
+one-shot calls on a `UsbDevice` you have not opened as a `TrinetDevice`, each opening
+and closing its own connection — e.g. `getCalibrationAny(context, device)` and
+`setWirelessBroadcast(context, device, enabled)` / `getWirelessBroadcast(context, device)`.
+Blocking — call from `Dispatchers.IO`. Because it opens a second connection, don't use
+it while a `TrinetDevice` holds the camera; use the `TrinetDevice` methods then.
 
 **Thermal pause.** `getThermal()` returns `ThermalStatus(tempC, state, paused)`.
 The demo Record screen polls it while recording and auto-pauses/resumes recording
@@ -142,9 +157,14 @@ pause/cool/resume on the streaming path.
 
 ### `SessionConfig`
 
-`data class SessionConfig(width: Int = 1920, height: Int = 1080, fps: Int = 30)`
+`data class SessionConfig(width: Int = 1920, height: Int = 1080, fps: Int = 30, maxFrameBytes: Int = 1 shl 20, fallbackWidth: Int = 0, fallbackHeight: Int = 0)`
 
 Requested stream format. The device must advertise a matching combination.
+`fallbackWidth`/`fallbackHeight` (0 = none) name a second resolution tried quietly
+when the first is not advertised — ask for `3840×1080` with a `1920×1080` fallback to
+open stereo and mono cameras alike. `maxFrameBytes` is the per-frame size budget at
+1080p (oversize frames are dropped whole; ≤ 0 disables it); the session scales it by
+the negotiated pixel area.
 
 ### `TrinetSession`
 
@@ -158,7 +178,24 @@ Requested stream format. The device must advertise a matching combination.
 | `start` | `(): Boolean` | Begin streaming. `false` if format negotiation failed. |
 | `stop` | `()` | Stop streaming (re-startable). |
 | `close` | `()` | Stop + mark unusable. Does **not** release the USB device. |
+| `negotiatedWidth` / `negotiatedHeight` | `Int` | The frame size the device actually delivers — the fallback size if it was used. Kept across `stop()`. |
+| `effectiveMaxFrameBytes` | `Int` | The frame budget in force, scaled from `SessionConfig.maxFrameBytes`. |
+| `layout` | `StreamLayout` | How the eyes sit in the negotiated frames. |
+| `isSideBySide` | `Boolean` | True while streaming a side-by-side stereo pair. |
 | `Frame` | `data class Frame(annexB: ByteArray, ptsUs: Long)` | One access unit (Annex B) + capture PTS (µs). |
+
+### `StreamLayout`
+
+`enum class StreamLayout { MONO, SIDE_BY_SIDE }` — how a camera's eyes are arranged in
+one video frame. `SIDE_BY_SIDE`: both eyes, left eye in the left half.
+
+| Member | Signature | Description |
+|---|---|---|
+| `metaTag` | `String?` | The `meta.json` `video.layout` value: `"sbs"`, or `null` for `MONO` (key omitted). |
+| `Companion.of` | `(width, height): StreamLayout` | Classify a frame size: `SIDE_BY_SIDE` when `width >= 3 × height`. |
+
+Detect stereo from the stream, never from the USB product id — a stereo camera shares
+the mono camera's product id. See [stereo cameras](streaming.md#stereo-cameras).
 
 ### `FrameCallback`
 
@@ -211,7 +248,7 @@ Records a session to a folder (`video.mp4` + `imu.bin` + `frames.bin` + `meta.js
 
 ### `RecordingMeta` / `MetaWriter`
 
-`data class RecordingMeta(id, createdAtEpochMs, deviceVendorId, deviceProductId, deviceSerial, width, height, fps, codec, sdkVersion)` and `object MetaWriter { fun write(file, meta) }` — write `meta.json`. Normally driven by `TrinetRecorder`.
+`data class RecordingMeta(id, createdAtEpochMs, deviceVendorId, deviceProductId, deviceSerial, width, height, fps, codec, sdkVersion, firmwareVersion = null, generation = null, hasCalibration = false, layout = null, shutter = null)` and `object MetaWriter { fun write(file, meta) }` — write `meta.json`. Normally driven by `TrinetRecorder`, which fills `layout` (`"sbs"` for a side-by-side frame) from the frame shape and `shutter` (`"global"` / `"rolling"`) from the stream's timing SEI; both keys are omitted when `null`.
 
 ### Low-level writers
 
@@ -318,13 +355,14 @@ v4), `sizeFor(version)`, and the timing flags `TIMING_MID_EXPOSURE = 0x01`,
 
 ### `TrinetGeneration`
 
-`enum class TrinetGeneration { LEGACY, V3, V4 }` — camera generation, with `label`
-for UI display.
+`enum class TrinetGeneration { LEGACY, V3, V4, V5, V6 }` — camera generation, with
+`label` for UI display. `V4` = Pro Mono, `V5` = Pro Stereo, `V6` = Pro Stereo GS
+(global shutter).
 
 > **Forward-compatibility caveat.** `fromCode` maps anything it does not
 > recognise — including a generation code newer than this SDK — to `LEGACY`, and
 > `LEGACY` means "the per-sample trailing float is `fsyncDelayUs`". On a camera
-> newer than V4 that float is `magAgeUs`, so trusting `hasLiveMag` there would
+> newer than this SDK that float is `magAgeUs`, so trusting `hasLiveMag` there would
 > read a magnetometer age as a frame-sync offset.
 >
 > This is only reachable if you pair this SDK with a camera generation released
@@ -335,10 +373,44 @@ for UI display.
 
 | Member | Type / Signature | Description |
 |---|---|---|
-| `hasLiveMag` | `Boolean` | V3/V4: the per-sample trailing float is `magAgeUs` (live magnetometer) rather than `fsyncDelayUs`. |
-| `hasAudio` | `Boolean` | V4 only: the camera embeds audio (recordings gain a second AAC track). |
-| `Companion.fromCode` | `(code: String?): TrinetGeneration` | Map the device-reported code (`"v2"`/`"v3"`/`"v4"`, from [`getGeneration`](#trinetdevice)) — the authoritative source. Unknown/null → `LEGACY`. |
+| `hasLiveMag` | `Boolean` | V3 and later: the per-sample trailing float is `magAgeUs` (live magnetometer) rather than `fsyncDelayUs`. |
+| `hasAudio` | `Boolean` | V4, V5, V6: the camera embeds audio (recordings gain a second AAC track). |
+| `nominalImuRateHz` | `Int` | Nominal IMU rate for a recording header: 400 from V3 on, 562 for `LEGACY`. Use it instead of a hand-kept list of generations. |
+| `isStereo` | `Boolean` | V5, V6. A label and cross-check only — detect stereo from [`TrinetSession.layout`](#trinetsession). |
+| `isGlobalShutter` | `Boolean` | V6. Advisory like `isStereo`; the authoritative signal is [`SeiImuHeader.shutter`](#seiimuheader--seiimupayload). |
+| `Companion.fromCode` | `(code: String?): TrinetGeneration` | Map the device-reported code (`"v2"` … `"v6"`, from [`getGeneration`](#trinetdevice)) — the authoritative source. Unknown/null → `LEGACY`. |
 | `Companion.fromFormatVersion` | `(version: Int?): TrinetGeneration` | Recording-time fallback from the IMU SEI/sidecar format version (≥5 → at least V3; cannot distinguish V3 from V4 — the presence of audio is the tell). |
+
+### `VideoCodec`
+
+`enum class VideoCodec(wire: Int, label: String) { H264, H265 }` — codec of the
+camera's own memory-card recordings, for [`setVideoCodec`](#trinetdevice). `label` is
+`"H.264"` / `"H.265"`; `Companion.fromWire(v): VideoCodec?`.
+
+### `ShutterType`
+
+`enum class ShutterType(metaTag: String) { GLOBAL, ROLLING }` — the sensor's shutter as
+the stream declares it; `metaTag` is the `meta.json` `video.shutter` value
+(`"global"` / `"rolling"`).
+
+### `Calibration` / `StereoCalibrationData`
+
+`sealed interface Calibration` — a camera's calibration, whichever kind it has:
+`Calibration.Mono(data: CalibrationData)` or `Calibration.Stereo(data: StereoCalibrationData)`.
+`Calibration.decodeAny(blob: ByteArray?): Calibration?` decodes a 200-byte mono or
+300-byte stereo blob (null when absent or invalid); `TrinetDevice.getCalibrationAny()`
+is the shortcut.
+
+`data class StereoCalibrationData(cameras, rCam0Imu, tCam0Imu, rCam1Cam0, tCam1Cam0, accelNoiseDensity, gyroNoiseDensity, accelRandomWalk, gyroRandomWalk, accelBias, gyroBias, gyroResidual, accelResidual, imuRateHz, …)`
+
+| Member | Type / Signature | Description |
+|---|---|---|
+| `cameras` | `List<CameraBlock>` | Per eye, `cam0` = left: `imageWidth`, `imageHeight`, `model`, `fx`, `fy`, `cx`, `cy`, `distortion`, `timeshiftCamImuS`, `reprojectionRmsPx`. |
+| `rCam0Imu` / `tCam0Imu` | `FloatArray` | IMU → left-eye extrinsics (3×3 row-major rotation, translation in m). |
+| `rCam1Cam0` / `tCam1Cam0` | `FloatArray` | Left eye → right eye extrinsics. |
+| `baselineM` | `Float` | Stereo baseline, metres (length of `tCam1Cam0`). |
+| `leftEyeAsMono` | `(): CalibrationData?` | The left eye + IMU as a mono calibration, for code that only handles one camera. |
+| `Companion.decode` | `(blob): StereoCalibrationData?` | Decode a 300-byte stereo blob. |
 
 ---
 
@@ -363,6 +435,11 @@ frame's device timestamp — exposure-centre when `isMidExposure`), `exposureUs`
 `timingFlags`, and `readoutTimeUs` (rolling-shutter readout span). Convenience
 getters `isMidExposure` / `isFrameCentered` mirror
 [`VtsEntry`](#vtsentry). All four are 0 on pre-v6 streams.
+
+`SeiImuHeader.shutter: ShutterType?` — the shutter this frame declares: `ROLLING` for a
+non-zero readout, `GLOBAL` for a *valid zero* readout (`TIMING_READOUT_VALID` set,
+`readoutTimeUs == 0` — the Pro Stereo GS), `null` when the frame does not say (pre-v6
+streams, or readout not marked valid).
 
 ### `SeiAudioParser`
 
@@ -450,6 +527,130 @@ manages an `AudioPlayer` tied to the composition lifecycle.
 
 ---
 
+## Package `wireless`
+
+Follow cameras recording to their own memory card over the Bluetooth LE status
+broadcast — the phone only listens. Guide: [Wireless status](wireless-status.md).
+Needs camera firmware 0.5.9+ and the app-declared Bluetooth permissions.
+
+### `WirelessCameraMonitor`
+
+`class WirelessCameraMonitor(context: Context, config: WirelessMonitorConfig)`; also
+`WirelessCameraMonitor(context)` with the default config. Use one per process; call
+`start`/`stop`/`setScanMode` on the main thread.
+
+| Member | Type / Signature | Description |
+|---|---|---|
+| `start` / `stop` | `()` | Start / stop the one long-lived scan. `start` is idempotent — call again after a permission grant. `stop` keeps camera state and history. |
+| `state` | `StateFlow<WirelessMonitorState>` | `Stopped`, `Scanning`, or `Error(reason, message)` with `reason` `NO_BLUETOOTH` / `BLUETOOTH_OFF` / `PERMISSION_DENIED` / `SCAN_FAILED`. |
+| `cameras` | `StateFlow<List<WirelessCamera>>` | Every camera heard, by unit id; updated at most `CAMERAS_MAX_HZ` (4) times a second. |
+| `events` | `SharedFlow<WirelessEvent>` | Recording start/stop edges as detected (not replayed). |
+| `eventHistory` | `List<WirelessEvent>` | Events since construction, oldest first (last 2000). |
+| `history` | `WirelessHistory?` | The stored history; `null` when persistence is disabled. |
+| `setScanMode` | `(mode: WirelessScanMode)` | Change the scan duty cycle; applied at most once every 10 s. |
+| `exportTo` | `(out: OutputStream, scope: WirelessExportScope = ALL, gzip: Boolean = true): WirelessExportSummary` | Write the wireless status log (format v2) for the desktop sync tool. Blocking. Throws `IllegalStateException` when persistence is disabled. |
+| `toUtcMillis` | `(unitId: String, deviceMs: Long): Long?` | UTC for a camera time on that camera's current boot. |
+| `hasScanPermission` | `(): Boolean` | The permission the scan needs on this Android version is granted. |
+| `Companion.requiredPermissions` | `(): Array<String>` | `BLUETOOTH_SCAN` (Android 12+) or `ACCESS_FINE_LOCATION` (11 and older). |
+| `exportLog` | `(): JSONObject` | **Deprecated** — format v1, live fits only. Use `exportTo`. |
+
+### `WirelessMonitorConfig` / `WirelessPersistence` / `WirelessScanMode`
+
+| Type | Description |
+|---|---|
+| `data class WirelessMonitorConfig(persistence = WirelessPersistence(), scanMode = WirelessScanMode.LOW_LATENCY)` | Monitor configuration. |
+| `data class WirelessPersistence(enabled = true, retentionDays = 30, maxBytes = 256 MB, sntpServer: String? = "time.google.com", sntpIntervalMs = 10 min, fileName)` | History settings. `WirelessPersistence.Disabled` keeps live state only; `sntpServer = null` turns the internet time check off (it also needs `INTERNET`). |
+| `enum class WirelessScanMode { LOW_LATENCY, BALANCED, LOW_POWER }` | Continuous (screen on) / duty-cycled (background logging) / lowest power. |
+
+### `WirelessCamera`
+
+`data class WirelessCamera` — live state of one camera.
+
+| Member | Type | Description |
+|---|---|---|
+| `unitId` | `String` | 8 lowercase hex: the first 8 of the camera's device id (USB serial). |
+| `address` | `String` | Advertiser address. |
+| `recording` / `finalizing` / `sdOk` | `Boolean` | Recording / closing a take / memory card present. |
+| `takeNumber` / `recordingCount` | `Int` | Current or last take (0 = none) / recordings on the card. |
+| `groupId` / `groupLow` / `role` | `Int` / `Int` / `WirelessRole` | Full 16-bit kit id (0 = none) / its low byte / `UNPAIRED`, `MASTER`, `SLAVE`, `UNKNOWN`. |
+| `rssi` / `rssiAvg` | `Int?` / `Double?` | Last and ~3 s-smoothed signal strength, dBm. Not a distance. |
+| `lastSeenElapsedNanos` | `Long` | Last heard, on `SystemClock.elapsedRealtimeNanos()`. `secondsSinceSeen(nowElapsedNanos)` helps. |
+| `lastEdgeDeviceMs` / `lastEdgeUtcMillis` | `Long?` | Last start/stop this camera boot. |
+| `fit` | `DeviceClockFit.Quality` | Clock-fit quality: `samples`, `buckets`, `residualMs`, `skewPpm`, `ready`, `skewEstimated`. |
+| `identity` / `identityIsCurrent` | `WirelessIdentity?` / `Boolean` | Model and firmware; current = sent in the camera's present boot. |
+| `advert` | `WirelessAdvert` | The last raw status advert. |
+
+### `WirelessEvent`
+
+`sealed class WirelessEvent` — `Started`, `Stopped`, `AbnormalStop` (adds
+`cameraRestarted: Boolean`). Common members: `unitId`, `takeNumber`, `deviceMs`,
+`utcMillis: Long?` (null while no clock fit exists), `eventSeq`, `bootNonce`,
+`missedEdges` (edges collapsed while out of range), `detectedElapsedNanos`, and
+`kind` (`"started"` / `"stopped"` / `"abnormal_stop"`).
+
+### `WirelessIdentity` / `WirelessBoard`
+
+`data class WirelessIdentity` — a camera's identity broadcast: `board`, `boardWire`,
+`boardName`, `generation` (`"v6"` or null), `hwGenerationNumber`, `fwVersion`
+(`"0.5.9"` or null), `fwMajor`/`fwMinor`/`fwPatch`, `shipping` (false = development
+build), `versionKnown`, `bootNonce`, `shutter`. `Companion.parse(bytes): WirelessIdentity?`.
+
+`enum class WirelessBoard { UNKNOWN, MONO, STEREO, STEREO_GS }` with `displayName`
+("Pro Stereo GS"), `shortName` ("Stereo GS"), `productName` ("Trinet Pro Stereo GS"),
+`exportName`, and `shutter: WirelessShutter` (`GLOBAL` for `STEREO_GS`, else `ROLLING`).
+
+### `WirelessAdvert`
+
+`data class WirelessAdvert` — one decoded status broadcast (`flags`, `bootNonce`,
+`eventSeq`, `takeNumber`, `recordingCount`, `nowMs`, `edgeMs`, `groupLow`, and the
+decoded `recording`, `finalizing`, `sdOk`, `role`, `timebaseIsMaster`, `linkUp`,
+`abnormalStop`). For apps with their own scanner: `Companion.parse(bytes)`,
+`unitIdFromAddress(address)`, `groupIdFromAddress(address, groupLow)`, `COMPANY_ID`.
+
+### `DeviceClockFit`
+
+The camera-clock → phone-clock fit behind `toUtcMillis` (lower envelope of arrival
+delays, offset + skew, per camera boot). Exposed mainly for its `Quality`
+(`WirelessCamera.fit`).
+
+### Package `wireless.log` — `WirelessHistory`
+
+`class WirelessHistory` — the stored history. From `monitor.history`, or
+`WirelessHistory.open(context, persistence = WirelessPersistence())` without a
+running monitor. Queries are `suspend` (on `Dispatchers.IO`); exports block.
+
+| Member | Signature | Description |
+|---|---|---|
+| `units` | `suspend (range = WirelessTimeRange.ALL, query: String? = null): List<WirelessUnitSummary>` | Cameras heard, newest first. `query` matches unit id, names, kit id, model or firmware. |
+| `unit` | `suspend (unitId): WirelessUnitSummary?` | One camera, with its last stored `identity`. |
+| `kits` | `suspend (): List<WirelessKitSummary>` | Kits and their members. |
+| `takes` | `suspend (unitId, limit = 50, offset = 0): List<WirelessTake>` | A camera's takes, newest first, UTC refined with its latest clock fit. |
+| `kitTakes` | `suspend (groupId, limit = 50): List<WirelessKitTake>` | Members' takes starting within `KIT_TAKE_WINDOW_MS` (2 s) = one kit take. |
+| `segments` | `suspend (unitId, limit = 20): List<WirelessSegmentInfo>` | Clock fits per camera boot (sync quality). |
+| `sightings` / `seenRanges` | `suspend (unitId, sinceUtcMillis)` | Minute-by-minute reception / merged in-range periods. |
+| `setLabel` / `setKitLabel` / `labels` / `kitLabels` | `suspend` | Name cameras and kits; names survive deletion. |
+| `stats` / `estimate` | `suspend (): WirelessHistoryStats` / `suspend (scope): WirelessExportEstimate` | Store size / rough size of an export. |
+| `deleteBefore` / `clear` | `suspend (utcMillis)` / `suspend ()` | Delete history (names are kept). |
+| `observe` | `(query: suspend WirelessHistory.() -> T): Flow<T>` | Re-run a query whenever the history changes. |
+| `changes` | `StateFlow<Long>` | Increments on every change. |
+| `exportTo` | `(out, scope = WirelessExportScope.ALL, gzip = true): WirelessExportSummary` | Wireless status log, format v2 (JSON Lines, gzip by default). Does not close `out`. |
+| `exportTakesCsv` | `(out, scope = WirelessExportScope.ALL)` | Takes as CSV (UTF-8, ISO-8601 UTC). |
+
+Supporting types (package `com.panoculon.trinet.sdk.wireless.log`):
+`WirelessTimeRange(fromUtcMillis?, toUtcMillis?)` (`ALL`);
+`WirelessExportScope(units?, groups?, fromUtcMillis?, toUtcMillis?)` with `ALL`,
+`unit(unitId, from, to)`, `kit(groupId, from, to)`;
+`WirelessExportSummary(records, units, segments, buckets, events, takes, sightings, bytes)`;
+`WirelessTake` (`pairing: WirelessTakePairing` `EXACT` / `MISSED_EDGES` / `START_ONLY` /
+`STOP_ONLY`, `stopKind: WirelessStopKind?` `STOPPED` / `ABNORMAL_STOP` / `REBOOT`,
+`startUtcMillis`, `stopUtcMillis`, `durationMs`, `endedAbnormally`, …);
+`WirelessKitTake`; `WirelessUnitSummary` (`identity: WirelessUnitIdentity?` with
+`board`, `hwGeneration`, `fwVersion`, `shipping`); `WirelessKitSummary`;
+`WirelessSegmentInfo`; `WirelessSighting`; `WirelessSeenRange`;
+`WirelessHistoryStats`; `WirelessExportEstimate`.
+
+---
+
 ## Package `io`
 
 Little-endian primitive helpers used by the readers/writers. Available if you need to
@@ -469,7 +670,8 @@ and [LivePreview](streaming.md#livepreview-compose-component).
 
 | Composable / Type | Signature | Description |
 |---|---|---|
-| `LivePreview` | `@Composable (frames: SharedFlow<TrinetSession.Frame>, width, height, modifier)` | Decode + display a live session. |
+| `LivePreview` | `@Composable (frames: SharedFlow<TrinetSession.Frame>, width, height, modifier, cropEye: Int? = null, onFocusScore: ((Float) -> Unit)? = null)` | Decode + display a live session. `cropEye` shows one eye of a side-by-side stereo frame (`0` left, `1` right; the decoder still gets both). `onFocusScore` receives a smoothed focus score of the displayed image ~8×/s for manual focusing. |
+| `FocusAssist` | `object` | Focus scoring behind `onFocusScore` (variance of the Laplacian over a centre ROI): `scoreBitmap(bitmap, cropEye)`, `scoreArgb(px, w, h)`, `ema(prev, raw)`, `roiOf(w, h, cropEye)`, `ROI_FRAC`. `FocusAssist.run(...)` was removed in 0.5.0. |
 | `LiveAudio` | `@Composable (frames: SharedFlow<TrinetSession.Frame>, enabled: Boolean = true)` | Decode + play the TRINETAAC audio in a live session's frames. Drop it alongside `LivePreview` to add sound; `enabled = false` mutes. Silent (no-op) on pre-v4 cameras. |
 | `ImuOverlayPanel` | `@Composable (history: ImuHistory, sample: ImuSample?, quatXyzw: FloatArray, modifier)` | Sensor cards + orientation header. |
 | `OrientationCube` | `@Composable (quatXyzw: FloatArray, modifier, color)` | Quaternion-driven wireframe cube. |
@@ -481,4 +683,4 @@ and [LivePreview](streaming.md#livepreview-compose-component).
 
 See also: [Getting started](getting-started.md) · [Streaming](streaming.md) ·
 [IMU](imu.md) · [Recording](recording.md) · [Playback](playback.md) ·
-[File formats](file-formats.md).
+[File formats](file-formats.md) · [Wireless status](wireless-status.md).

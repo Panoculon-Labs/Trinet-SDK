@@ -8,6 +8,7 @@ a recorder can both read the same stream.
 - [Opening a session](#opening-a-session)
 - [The frame flow](#the-frame-flow)
 - [LivePreview Compose component](#livepreview-compose-component)
+- [Stereo cameras](#stereo-cameras)
 - [Multiple consumers](#multiple-consumers)
 - [Errors](#errors)
 - [Stopping](#stopping)
@@ -30,6 +31,14 @@ if (!session.start()) {
 `SessionConfig` defaults to **1920×1080 @ 30 fps**, which is what a Trinet camera ships
 with. The requested combination must be one the device advertises; if negotiation fails,
 `start()` returns `false`.
+
+`SessionConfig(width, height, fps, maxFrameBytes = 1 MiB, fallbackWidth = 0,
+fallbackHeight = 0)`: `fallbackWidth`/`fallbackHeight` name a second resolution to try
+when the first is not advertised — the way to ask for a stereo camera's wide frame and
+still open a mono camera (see [stereo cameras](#stereo-cameras)). The miss on the way to
+the fallback is quiet: it raises no error. `maxFrameBytes` is a per-frame size budget
+expressed at 1080p (larger frames are dropped whole); the session scales it up with the
+negotiated pixel area, so a 3840×1080 stereo frame gets twice the budget.
 
 `TrinetDevice.open` must be called on a worker thread — it opens the USB device and
 initializes the native streaming layer, both of which block.
@@ -122,6 +131,19 @@ fun CameraView(session: TrinetSession) {
 - It **letterboxes** the surface to the source aspect ratio so 16:9 video isn't
   stretched in a portrait container.
 
+Two optional parameters:
+
+- `cropEye: Int?` — for a side-by-side stereo stream, show only one eye: `0` = left,
+  `1` = right, `null` (default) = the whole frame. The decoder still receives both
+  eyes, so switching eyes is instant and never interrupts a recording.
+- `onFocusScore: ((Float) -> Unit)?` — manual-focus assist. When set, the preview
+  scores the sharpness of its own surface (variance of the Laplacian over a centre
+  region, smoothed) about 8 times a second and reports it; turn the lens until the
+  score peaks. It scores the eye selected by `cropEye`. `FocusAssist` exposes the
+  scoring (`scoreBitmap`, `scoreArgb`, `ema`, `roiOf`, `ROI_FRAC`) if you want to draw
+  the region or score your own bitmaps. (Since 0.5.0 there is no separate
+  `FocusAssist.run(...)` decoder.)
+
 `LivePreview` is purely a decode-and-display sink: it reads from `frames` but never
 controls the session. You still call `session.start()` / `session.stop()` yourself.
 
@@ -142,6 +164,60 @@ On cameras without audio it simply stays silent — no version check needed. For
 non-Compose apps, use `AudioPlayer` + `SeiAudioParser` directly (see the
 [API reference](api-reference.md#package-audio)). Microphone gain/mute/AGC and
 sample rate are controllable via `device.setAudio(...)` / `device.setAudioRate(...)`.
+
+---
+
+## Stereo cameras
+
+The Pro Stereo and Pro Stereo GS do not open a second USB video function: they put
+**both eyes side by side in one frame** (3840×1080 for a 1080p pair; the left half is
+the physically left eye). IMU, audio and controls are the same as on a mono camera.
+
+Ask for the wide frame with a mono fallback, and the same code opens either kind of
+camera:
+
+```kotlin
+val config = SessionConfig(
+    width = 3840, height = 1080, fps = 30,
+    fallbackWidth = 1920, fallbackHeight = 1080,   // mono cameras
+)
+val session = withContext(Dispatchers.IO) { device.open(config) }
+check(session.start())
+
+session.negotiatedWidth    // 3840 on a stereo camera, 1920 on a mono one
+session.negotiatedHeight
+session.layout             // StreamLayout.SIDE_BY_SIDE or StreamLayout.MONO
+session.isSideBySide       // true while streaming a stereo pair
+```
+
+- **Detect stereo from the stream shape** (`session.layout` / `isSideBySide`), not
+  from the USB product id — a stereo camera enumerates with the same product id as a
+  mono one. `TrinetGeneration.isStereo` is a label and a cross-check only.
+  `StreamLayout.of(width, height)` classifies any frame size.
+- **Preview**: pass the negotiated size and choose an eye with `cropEye`:
+
+  ```kotlin
+  LivePreview(
+      frames = session.frames,
+      width = session.negotiatedWidth,
+      height = session.negotiatedHeight,
+      cropEye = if (session.isSideBySide) eye else null,   // 0 = left, 1 = right
+  )
+  ```
+- **Recording**: construct the `TrinetRecorder` with `session.negotiatedWidth` /
+  `negotiatedHeight`. Recordings keep the full frame, both eyes, and `meta.json`
+  gains `video.layout: "sbs"` ([file formats](file-formats.md#metajson)).
+- **Calibration**: a stereo camera stores a two-eye calibration. Read it with
+  `device.getCalibrationAny()`, which returns `Calibration.Mono` or
+  `Calibration.Stereo` (per-eye intrinsics plus `baselineM`); see the
+  [API reference](api-reference.md#calibration--stereocalibrationdata).
+- **Global shutter**: the Pro Stereo GS behaves identically. Its frames report a
+  readout time of zero, and `SeiImuHeader.shutter` returns `ShutterType.GLOBAL`
+  (`ROLLING` on the other cameras). A calibration from a rolling-shutter camera is not
+  valid on a global-shutter one.
+
+Some phones' hardware decoders reject 3840-wide video; `LivePreview` falls back to a
+software decoder on its own.
 
 ---
 

@@ -94,6 +94,19 @@ DeviceInfo.TRINET_VID   // 0x2207
 DeviceInfo.TRINET_PIDS  // setOf(0x0016, 0x0018, 0x001A)
 ```
 
+**The product ID does not tell you which camera it is.** A stereo camera enumerates
+with the same product ID as a mono one. To tell them apart, open a session and check
+its negotiated frame shape (`session.layout` / `session.isSideBySide` — see
+[stereo cameras](streaming.md#stereo-cameras)); `getGeneration()` is a cross-check.
+
+### Bluetooth (wireless status only)
+
+Nothing above involves Bluetooth. Only if you use [wireless status](wireless-status.md)
+— following cameras that record to their own card, without connecting — add the
+Bluetooth LE feature and scan permissions listed in
+[Wireless status → Permissions](wireless-status.md#permissions), and request
+`WirelessCameraMonitor.requiredPermissions()` at runtime. The SDK itself declares none.
+
 ### Requesting CAMERA at runtime
 
 CAMERA is a dangerous permission, so the manifest entry is not enough — request it at
