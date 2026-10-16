@@ -19,7 +19,15 @@ import Foundation
 
 public final class TrinetLiveSession: @unchecked Sendable {
     public let device: TrinetDevice
-    public let codec: VideoCodec
+
+    /// The codec the camera is actually streaming. Starts as the value passed
+    /// to `init` (normally `TrinetDevice.streamCodec()`), and follows the
+    /// stream's HTTP Content-Type if that disagrees.
+    public var codec: VideoCodec {
+        lock.lock(); defer { lock.unlock() }
+        return activeCodec
+    }
+    private var activeCodec: VideoCodec
 
     private let lock = NSLock()
     private var videoStream: VideoStream?
@@ -35,7 +43,9 @@ public final class TrinetLiveSession: @unchecked Sendable {
     private var paramSPS: Data?
     private var paramPPS: Data?
 
-    // IMU now arrives in-stream as SEI (no more UDP :5555). Per access unit we
+    // IMU arrives in-stream as SEI (there is no separate IMU socket). On a
+    // stereo camera there is ONE SEI stream for the whole side-by-side canvas
+    // (both eyes are genlocked), handled exactly like mono. Per access unit we
     // accumulate the SEI NALs (to mux into the MP4) and the frame's SoF time
     // (from the IMU samples) until the VCL that closes the AU. Only touched on
     // the single NAL producer thread.
@@ -54,19 +64,27 @@ public final class TrinetLiveSession: @unchecked Sendable {
         AsyncStream<ImuBatch>.makeStream(bufferingPolicy: .bufferingNewest(8))
     public var imuStream: AsyncStream<ImuBatch> { imuStreamMaker.stream }
 
+    // Embedded AAC audio (v4 cameras), surfaced for SDK consumers that want to
+    // play or analyse it live (the demo app keeps its preview silent). Bounded
+    // so a slow or absent consumer drops stale frames rather than backing up
+    // the NAL thread. Empty on older cameras (no TRINETAAC SEI). Recording does
+    // not depend on this stream — audio goes straight to the RecordSink.
+    private let audioStreamMaker =
+        AsyncStream<AacBatch>.makeStream(bufferingPolicy: .bufferingNewest(16))
+    public var audioStream: AsyncStream<AacBatch> { audioStreamMaker.stream }
+
     public init(device: TrinetDevice, codec: VideoCodec) {
         self.device = device
-        self.codec = codec
+        self.activeCodec = codec
     }
 
     // MARK: - Lifecycle
 
     public func start() async {
         let host = device.host
+        let codec = self.codec
 
-        let dec = VideoDecoder(codec: codec) { [weak self] sb in
-            self?.sampleStreamMaker.continuation.yield(sb)
-        }
+        let dec = makeDecoder(codec)
         let vs = VideoStream(host: host, codec: codec, interfaceName: device.interfaceName)
 
         lock.lock()
@@ -93,12 +111,38 @@ public final class TrinetLiveSession: @unchecked Sendable {
         vs?.stop()
         sampleStreamMaker.continuation.finish()
         imuStreamMaker.continuation.finish()
+        audioStreamMaker.continuation.finish()
+    }
+
+    private func makeDecoder(_ codec: VideoCodec) -> VideoDecoder {
+        VideoDecoder(codec: codec) { [weak self] sb in
+            self?.sampleStreamMaker.continuation.yield(sb)
+        }
+    }
+
+    /// The stream turned out to carry a different codec than expected (its
+    /// Content-Type is authoritative). Rebuild everything keyed on the codec.
+    /// Runs on the NAL producer thread, before the first NAL of that codec.
+    private func switchCodec(to newCodec: VideoCodec) {
+        lock.lock()
+        let old = activeCodec
+        activeCodec = newCodec
+        decoder = decoder == nil ? nil : makeDecoder(newCodec)
+        paramVPS = nil; paramSPS = nil; paramPPS = nil
+        var staleSink: RecordSink?
+        if let s = recordSink, s.codec != newCodec { staleSink = s; recordSink = nil }
+        lock.unlock()
+        pendingSEINALs.removeAll(); pendingSofNs = nil
+        NSLog("TrinetSDK live session: stream codec \(old.rawValue) → \(newCodec.rawValue)")
+        staleSink?.finish()
     }
 
     // MARK: - NAL hot path (synchronous, single producer thread)
 
     private func onNAL(_ nal: VideoStream.NALUnit) {
         guard let first = nal.payload.first else { return }
+        if nal.codec != self.codec { switchCodec(to: nal.codec) }
+        let codec = nal.codec
         let isSEI: Bool, isVCL: Bool
         switch codec {
         case .h265:
@@ -114,20 +158,29 @@ public final class TrinetLiveSession: @unchecked Sendable {
         // it to the decoder. Buffer the raw SEI NAL so we can mux it into the
         // MP4 frame (so the recording self-contains IMU like the UVC path).
         if isSEI {
+            var isAudioSEI = false
             if let payload = TrinetSEI.parse(nalPayload: nal.payload, codec: codec) {
                 switch payload {
                 case .imu(let batch):
                     imuStreamMaker.continuation.yield(batch)        // → UI plot
                     lock.lock(); let sink = recordSink; lock.unlock()
                     sink?.writeIMU(batch.samples, version: batch.version)  // → .imu file
-                    if pendingSofNs == nil, let s0 = batch.samples.first {
-                        pendingSofNs = TrinetSEI.deriveSofNs(s0, version: batch.version)
+                    if pendingSofNs == nil {
+                        pendingSofNs = TrinetSEI.frameTimeNs(of: batch)
                     }
                 case .temp:
                     break   // thermal trace — surfaced later if needed
+                case .audio(let batch):
+                    isAudioSEI = true
+                    audioStreamMaker.continuation.yield(batch)      // → optional SDK consumers
+                    lock.lock(); let sink = recordSink; lock.unlock()
+                    sink?.writeAudio(batch.frames)                  // → MP4 AAC track
                 }
             }
-            pendingSEINALs.append(nal.payload)
+            // IMU/temp SEIs are muxed verbatim into the MP4's video samples so the
+            // recording self-contains them. The audio SEI is NOT — its payload
+            // goes into a real AAC track instead, so don't also bloat the video.
+            if !isAudioSEI { pendingSEINALs.append(nal.payload) }
             return
         }
 
@@ -163,7 +216,7 @@ public final class TrinetLiveSession: @unchecked Sendable {
     /// Cache the latest VPS/SPS/PPS. Caller holds `lock`.
     private func cacheParamSet(_ nal: VideoStream.NALUnit) {
         guard let first = nal.payload.first else { return }
-        switch codec {
+        switch nal.codec {
         case .h264:
             switch first & 0x1F {
             case 7: paramSPS = nal.payload
@@ -193,17 +246,24 @@ public final class TrinetLiveSession: @unchecked Sendable {
 
     // MARK: - Recording control
 
+    /// Start recording the live stream. Stereo cameras record the full
+    /// side-by-side canvas (both eyes) regardless of the preview's lens
+    /// selection — showing one eye is display-only.
     @discardableResult
     public func startRecording(in directory: URL,
                                baseName: String? = nil) async throws -> RecordingHandle {
         let cfg    = await device.currentConfig
         let devId  = await device.deviceIdBytes
         let offset = await device.lastHostOffsetNs ?? 0
+        let info   = await device.info
         let params = snapshotParamSets()   // prime the writer immediately
-        let sink = try RecordSink(codec: codec, config: cfg,
+        let sink = try RecordSink(codec: self.codec, config: cfg,
                                   deviceId: devId, iosOffsetNs: offset,
                                   paramSets: params,
-                                  in: directory, baseName: baseName)
+                                  in: directory, baseName: baseName,
+                                  canvasWidth: info?.canvasWidth,
+                                  canvasHeight: info?.canvasHeight,
+                                  imuRateHz: info?.nominalImuRateHz ?? 562)
         lock.lock()
         recordSink = sink
         lock.unlock()
@@ -241,8 +301,13 @@ public final class TrinetLiveSession: @unchecked Sendable {
 }
 
 extension TrinetDevice {
-    /// Open a live session for preview + IMU telemetry + recording.
+    /// Open a live session for preview + IMU telemetry + recording. The codec
+    /// is whatever the camera actually streams: asked via `streamCodec()`
+    /// (firmware without that endpoint streams H.264), then confirmed against
+    /// the stream's Content-Type once it opens.
     public func liveSession() async -> TrinetLiveSession {
-        TrinetLiveSession(device: self, codec: await currentConfig.codec)
+        let codec = (try? await streamCodec()) ?? .h264
+        noteStreamCodec(codec)
+        return TrinetLiveSession(device: self, codec: codec)
     }
 }

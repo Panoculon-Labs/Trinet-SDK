@@ -28,7 +28,7 @@ you depend on the repo directly:
 ```swift
 // Consumer Package.swift
 dependencies: [
-    .package(url: "https://github.com/Panoculon-Labs/Trinet-SDK", from: "0.2.1"),
+    .package(url: "https://github.com/Panoculon-Labs/Trinet-SDK", from: "0.3.1"),
 ],
 targets: [
     .target(name: "MyApp", dependencies: [
@@ -38,7 +38,7 @@ targets: [
 ```
 
 In Xcode: **File → Add Package Dependencies…** → enter the repo URL → **Up to
-Next Major `0.2.1`** → add the **TrinetSDK** product.
+Next Major `0.3.1`** → add the **TrinetSDK** product.
 
 `import TrinetSDK` and you're set.
 
@@ -56,7 +56,32 @@ swift test                 # runs the IMU/format unit tests
 
 ---
 
-## Quick start
+## Supported cameras
+
+| Camera | Video over USB (NCM) | Notes |
+|---|---|---|
+| Trinet Pro Mono | 1920×1080, H.264 or H.265 | |
+| Trinet Pro Stereo | 3840×1080 side-by-side, H.264 or H.265 | left eye x 0–1919, right eye x 1920–3839 |
+| Trinet Pro Stereo GS | 3840×1080 side-by-side, H.264 or H.265 | global shutter; adds temporal noise reduction |
+
+The SDK reads the model on connect (`TrinetDevice.info`, `isStereo`, `model`).
+On a stereo camera both eyes arrive genlocked in one stream, with one IMU /
+temperature / audio stream for the pair. Recordings keep the full
+side-by-side frame, and the preview can show one eye or both:
+
+```swift
+LivePreviewView(stream: session.sampleStream, lens: .left)   // .left | .both | .right
+```
+
+**Codecs.** There are two independent settings:
+
+| Setting | SDK | What it controls |
+|---|---|---|
+| Stream codec | `streamCodec()` / `setStreamCodec(_:)` | The live stream to the phone. Changing it restarts the camera's stream (~5–10 s); the session reconnects on its own. Older firmware streams H.264 only. |
+| Recording codec | `recordingCodec()` / `setRecordingCodec(_:)` | The camera's own SD-card recordings. |
+
+The live session always follows the codec the camera actually streams.
+
 
 ```swift
 import TrinetSDK
@@ -183,6 +208,25 @@ func setRateControlMode(_ mode: String) async throws       // "cbr" | "avbr"
 func rateControlMode() async throws -> String
 func currentMode() async throws -> String                  // "uvc" | "ncm" | "imu"
 func setMode(_ mode: String) async throws                  // persisted; camera reboots
+
+// Model + stereo (0.3)
+var info: TrinetDeviceInfo?; var isStereo: Bool; var model: TrinetModel
+func getCalibrationAny() async throws -> TrinetCalibration?  // mono or stereo blob
+func setStereoCalibration(_ blob: StereoCalibrationBlob) async throws
+
+// Codecs (0.3.1)
+func streamCodec() async throws -> VideoCodec              // live stream to the phone
+func setStreamCodec(_ codec: VideoCodec) async throws      // camera restarts its stream
+func recordingCodec() async throws -> VideoCodec           // camera's SD recordings
+func setRecordingCodec(_ codec: VideoCodec) async throws
+
+// Camera controls (0.3) — each has a matching getter
+func setBrightness(_:), setContrast(_:), setSaturation(_:), setSharpness(_:), setHue(_:)
+func setGain(_:), setExposureMode(_:), setExposureTime(units100us:), setExposureRange(minUs:maxUs:)
+func setWhiteBalanceAuto(_:), setWhiteBalanceTemperature(kelvin:), setWhiteBalanceComponent(rGain:bGain:)
+func setMainsFrequency(hz:), setGop(frames:), setImuStream(_:), setCalibrationLock(_:)
+func setAudio(gainQ8:muted:agc:), setAudioRate(hz:), setThermalLimit(celsius:)
+func setBleBroadcast(_:), setAwbTune(cct:r:b:), setTemporalNoiseReduction(_:)   // TNR: Stereo GS
 ```
 
 `thermal()` returns `{state, temp_c, paused}`. Poll it ~1 Hz while recording and
@@ -298,9 +342,12 @@ IMU facts back out of a finished recording for display.
 
 ## Reference app (`TrinetApp/`)
 
-A complete SwiftUI demo: device list, live preview with IMU plot, record
-button, a library with full playback (play/pause/seek, fullscreen, share), and
-a Settings tab to pick the video encoding (H.264 default / H.265). It builds
+A complete SwiftUI demo: device list, live preview with IMU plot (an
+L / Both / R lens picker on stereo cameras), record button, a library with full
+playback (play/pause/seek, fullscreen, share), and a Controls tab with the
+camera's settings — including the stream codec (H.264 / H.265) and the card
+recording codec. The live preview is silent; audio is recorded into the file
+and plays back from the library. It builds
 `TrinetSDK` as a sibling framework target.
 
 > iOS has no "download an APK" equivalent — apps must be code-signed for your
@@ -377,7 +424,7 @@ one-line config file on the camera's SD card.
 
 ## Versioning
 
-`TrinetSDK.version` — currently **`0.2.1`**, tracking the git tag. Bump on
+`TrinetSDK.version` — currently **`0.3.1`**, tracking the git tag. Bump on
 on-disk-format changes, wire-protocol changes, or non-additive API changes. The
 Android SDK is versioned independently; both share the same on-disk and
 wire formats. Release notes are published under [**Releases**](../../releases).

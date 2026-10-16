@@ -6,12 +6,23 @@ import TrinetSDK
 struct RecordView: View {
     @EnvironmentObject var device: DeviceViewModel
     @StateObject private var vm = RecordViewModel()
+    /// Stereo preview lens (display-only; recordings always keep both eyes).
+    @AppStorage("trinet.preview.lens") private var lensRaw: String = StereoLens.left.rawValue
+
+    private var lens: StereoLens { StereoLens(rawValue: lensRaw) ?? .left }
+
+    /// Preview aspect: one eye (16:9) or the full side-by-side canvas (32:9)
+    /// on stereo; the plain frame (16:9) on mono.
+    private var previewAspect: Double {
+        device.info?.previewAspect(for: lens) ?? 16.0 / 9.0
+    }
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 12) {
                     previewCard
+                    if device.isStereo { lensPicker }
                     imuCard
                     controlsCard
                     if vm.isThermalPaused {
@@ -33,12 +44,13 @@ struct RecordView: View {
                 .padding(.vertical)
             }
             .navigationTitle("Record")
-            .task(id: "\(device.selected?.host ?? "none")|\(device.codec.rawValue)") {
-                // Restart the session when the selected device or the chosen
-                // encoding changes (or on first appearance).
+            .task(id: "\(device.selected?.host ?? "none")|\(device.streamRestarting)") {
+                // Restart the session when the selected device changes, or
+                // around a stream-codec change (closed while the camera
+                // restarts its stream, reopened afterwards).
                 await vm.closeSession()
-                if let dev = device.selected {
-                    await vm.openSession(on: dev, codec: device.codec)
+                if let dev = device.selected, !device.streamRestarting {
+                    await vm.openSession(on: dev)
                 }
             }
             .onDisappear {
@@ -50,14 +62,20 @@ struct RecordView: View {
     private var previewCard: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 12).fill(Color.black)
-                .aspectRatio(16.0/9.0, contentMode: .fit)
+                .aspectRatio(previewAspect, contentMode: .fit)
             if let stream = vm.sampleStream {
-                LivePreviewView(stream: stream)
-                    .aspectRatio(16.0/9.0, contentMode: .fit)
+                LivePreviewView(stream: stream, lens: device.isStereo ? lens : .both)
+                    .aspectRatio(previewAspect, contentMode: .fit)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
             } else {
                 VStack(spacing: 6) {
-                    if vm.isThermalPaused {
+                    if device.streamRestarting {
+                        ProgressView()
+                            .tint(.white)
+                        Text("Camera restarting stream…")
+                            .foregroundColor(.white.opacity(0.7))
+                            .font(.caption)
+                    } else if vm.isThermalPaused {
                         Image(systemName: "thermometer.sun.fill")
                             .font(.system(size: 36))
                             .foregroundColor(.orange)
@@ -100,6 +118,20 @@ struct RecordView: View {
             }
         }
         .padding(.horizontal)
+    }
+
+    /// L | Both | R — which eye(s) of the stereo canvas to preview. Display
+    /// only: switching is instant and allowed while recording.
+    private var lensPicker: some View {
+        Picker("Lens", selection: $lensRaw) {
+            Text("L").tag(StereoLens.left.rawValue)
+            Text("Both").tag(StereoLens.both.rawValue)
+            Text("R").tag(StereoLens.right.rawValue)
+        }
+        .pickerStyle(.segmented)
+        .padding(.horizontal)
+        .accessibilityLabel("Preview lens")
+        .accessibilityHint("Recording always keeps both eyes")
     }
 
     private var imuCard: some View {

@@ -23,6 +23,10 @@
 //     session.stopRecording()
 //     await session.stop()
 //
+// Stereo cameras (Pro Stereo / Pro Stereo GS) stream one 3840x1080
+// side-by-side canvas; check `device.info?.isStereo` after connect and pass a
+// `StereoLens` to `LivePreviewView` to show one eye.
+//
 // Wire-protocol details are in docs/PROTOCOLS.md (and docs/TRANSPORT.md for the
 // UVC-vs-NCM comparison). This SDK is the canonical client implementation — if
 // you find yourself opening raw sockets to the device, add a method here instead.
@@ -32,5 +36,5 @@ import Foundation
 public enum TrinetSDK {
     /// SDK semantic version. Bumped when the public API or wire protocol
     /// changes in a way customers can observe.
-    public static let version = "0.2.1"
+    public static let version = "0.3.1"
 }

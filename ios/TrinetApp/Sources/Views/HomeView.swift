@@ -25,6 +25,10 @@ struct HomeView: View {
                             HStack {
                                 VStack(alignment: .leading) {
                                     Text(d.host).font(.headline)
+                                    if device.selected?.host == d.host, let info = device.info {
+                                        Text(modelLine(info))
+                                            .font(.subheadline)
+                                    }
                                     if !device.deviceId.isEmpty,
                                        device.selected?.host == d.host {
                                         Text(device.deviceId.prefix(16) + "…")
@@ -87,6 +91,14 @@ struct HomeView: View {
                 }
             }
         }
+    }
+
+    /// e.g. "Trinet Pro Stereo · 0.5.10 · 3840×1080 side-by-side".
+    private func modelLine(_ info: TrinetDeviceInfo) -> String {
+        var parts = [info.displayName]
+        if let fw = info.firmwareVersion { parts.append(info.isDevBuild ? "\(fw) dev" : fw) }
+        parts.append("\(info.canvasWidth)×\(info.canvasHeight)\(info.isStereo ? " side-by-side" : "")")
+        return parts.joined(separator: " · ")
     }
 
     private func byteString(_ b: UInt64) -> String {

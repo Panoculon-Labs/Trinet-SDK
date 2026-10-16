@@ -32,17 +32,18 @@ final class RecordViewModel: ObservableObject {
     private var tickerTask: Task<Void, Never>?
     private var thermalTask: Task<Void, Never>?
     private var device: TrinetDevice?
-    private var codec: VideoCodec = .h264
     private var recordDir: URL?
     private var wasRecordingBeforeThermal = false
     private var startedAt = Date()
 
-    func openSession(on device: TrinetDevice, codec: VideoCodec) async {
+    /// The live preview is deliberately SILENT: the session's audio is not
+    /// played here. It still reaches recordings (the SDK muxes it into the MP4's
+    /// AAC track), and Library playback plays that track.
+    func openSession(on device: TrinetDevice) async {
         if session != nil { return }
         self.device = device
-        self.codec = codec
-        // The live session requests `/live.<codec>`; set it before opening.
-        await device.setLocalConfig(DeviceConfig(codec: codec))
+        // The SDK asks the camera which codec it streams (and confirms it from
+        // the stream itself) — no app-side codec assumption.
         let s = await device.liveSession()
         self.session = s
         self.sampleStream = s.sampleStream
@@ -54,6 +55,7 @@ final class RecordViewModel: ObservableObject {
                 self?.imuHistory.append(pkt.samples)
             }
         }
+
         await s.start()
         startThermalWatch()
     }
@@ -105,7 +107,7 @@ final class RecordViewModel: ObservableObject {
     private func exitThermalPause() async {
         isThermalPaused = false
         guard let dev = device else { return }
-        await openSession(on: dev, codec: codec)   // recreate preview session
+        await openSession(on: dev)   // recreate preview session
         if wasRecordingBeforeThermal, let dir = recordDir {
             wasRecordingBeforeThermal = false
             await startRecording(into: dir)

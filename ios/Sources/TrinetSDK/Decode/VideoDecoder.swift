@@ -6,6 +6,13 @@
 // are auto-extracted; once a complete set lands, subsequent VCL NALs get
 // wrapped in CMSampleBuffer via the AVCC framing (4-byte length prefix
 // + NAL bytes) and emitted via the `onSampleBuffer` callback.
+//
+// Frame size: nothing here assumes 1920x1080. The CMVideoFormatDescription —
+// and so the decoded size — comes entirely from the SPS, so the stereo
+// boards' 3840x1080 side-by-side canvas (H.264 level 5.x) flows through
+// unchanged. There is deliberately no profile/level filter: the display layer
+// decodes in hardware, and every iPhone this SDK supports (iOS 17+) decodes
+// well beyond 3840x1080@30. `formatDimensions` reports the current size.
 
 import CoreMedia
 import Foundation
@@ -24,6 +31,12 @@ public final class VideoDecoder {
     private var vps: Data?     // h265 only
     private var sps: Data?
     private var pps: Data?
+
+    /// Coded frame size from the current SPS (e.g. 3840x1080 on a stereo
+    /// camera), or nil until the first parameter sets arrive.
+    public var formatDimensions: CMVideoDimensions? {
+        formatDesc.map { CMVideoFormatDescriptionGetDimensions($0) }
+    }
 
     public init(codec: VideoCodec, onSampleBuffer: @escaping SampleHandler) {
         self.codec = codec

@@ -28,13 +28,13 @@ see `InterfacePinning.swift`.
 |------|-------|-------------------------|------------------|---------|
 | 8080 | HTTP  | `GET /live.h264`        | server → client  | Raw H.264 Annex-B bytes (IMU embedded as SEI) |
 | 8080 | HTTP  | `GET /live.h265`        | server → client  | Raw H.265 Annex-B bytes (IMU embedded as SEI) |
-| 8081 | HTTP  | `GET /api/device_id`    | request/response | `{device_id, product, mode}` |
+| 8081 | HTTP  | `GET /api/device_id`    | request/response | `{device_id, product, mode, generation, model, firmware, build, cameras, layout, canvas{width,height}}` — fields after `mode` are absent on older firmware |
 | 8081 | HTTP  | `GET /api/state`        | request/response | `{mode, recording, ready, note}` |
 | 8081 | HTTP  | `GET /api/storage`      | request/response | `{mount, present, total_bytes?, available_bytes?}` |
 | 8081 | HTTP  | `GET /api/time`          | request/response | `{clock_monotonic_ns, clock_realtime_ns}` |
 | 8081 | HTTP  | `GET /api/thermal`       | request/response | `{state, temp_c, paused}` — host-pause signal (see below) |
-| 8081 | HTTP  | `POST /api/calibration`  | client → server  | Upload calibration blob (200-byte `application/octet-stream`) |
-| 8081 | HTTP  | `GET /api/calibration`   | request/response | Stored calibration blob (200 bytes); `404` if none |
+| 8081 | HTTP  | `POST /api/calibration`  | client → server  | Upload calibration blob (`application/octet-stream`: 200 bytes mono, 300 bytes stereo) |
+| 8081 | HTTP  | `GET /api/calibration`   | request/response | Stored calibration blob (200 or 300 bytes); `404` if none |
 | 8081 | HTTP  | `POST /api/led`          | client → server  | `{r,g,b}` status-LED channels on/off (0/1; the LED has no PWM) |
 | 8081 | HTTP  | `GET /api/video/bitrate` | request/response | `{kbps}` — current encoder bitrate target |
 | 8081 | HTTP  | `POST /api/video/bitrate`| client → server  | `{kbps}` (256…30000); persisted; camera restarts (~15 s) to apply |
@@ -43,6 +43,32 @@ see `InterfacePinning.swift`.
 | 8081 | HTTP  | `GET /api/mode`          | request/response | `{mode}` — persistent boot mode `"uvc"`\|`"ncm"`\|`"imu"` |
 | 8081 | HTTP  | `POST /api/mode`         | client → server  | `{mode}`; persisted; camera reboots to apply (re-enumerates) |
 | 5557 | UDP   | sync probe / response    | bidir            | Clock-offset measurement (see below) |
+
+### Codecs and camera controls (0.3+)
+
+All are `GET` (read) + `POST` (set) with a JSON body. Older firmware answers
+`404`, and the SDK treats that as "not supported".
+
+| Endpoint | Body | Notes |
+|---|---|---|
+| `/api/video/stream_codec` | `{"codec":"h264"\|"h265"}` | **Live stream** codec. POST persists it and restarts the stream (~5–10 s); the API stays up. GET also returns `source` (`host` \| `default`). |
+| `/api/video/codec` | `{"codec":"h264"\|"h265"}` | The camera's **SD-card recording** codec; no restart. |
+| `/api/video/{brightness,contrast,saturation,sharpness,hue,gain}` | `{"value":N}` | Live. On stereo, applied to both eyes. |
+| `/api/video/exposure_mode` | `{"mode":"auto"\|"manual"}` | |
+| `/api/video/exposure_time` | `{"value":N}` (units of 100 µs, 5–2500) | Manual exposure only (`409` in auto). |
+| `/api/video/exposure` | `{"min_us","max_us"}` | Auto-exposure window. |
+| `/api/video/white_balance_auto` · `_temperature` · `_component` | `{"value"}` / `{"r_gain","b_gain"}` | |
+| `/api/video/power_line` | `{"hz":50\|60}` | Anti-flicker. |
+| `/api/video/gop` | `{"frames":N}` | Persisted; the camera restarts to apply. |
+| `/api/video/awb_tune` | `{"cct","r","b"}` | Live AWB anchor calibration. |
+| `/api/video/tnr` | `{"value":0\|1}` | Temporal noise reduction, Pro Stereo GS only; applied from the next boot. |
+| `/api/audio` · `/api/audio/rate` | `{"gain_q8","muted","agc"}` · `{"hz"}` | Rate change restarts the camera. |
+| `/api/imu/stream` | `{"enabled":0\|1}` | In-stream IMU on/off. |
+| `/api/calibration/lock` | `{"locked":0\|1}` | Refuses calibration uploads while locked. |
+| `/api/led` (GET) | `{"r","g","b"}` | Last colour set. |
+| `/api/thermal/limit` | `{"celsius":75–100}` (`0` = default) | Applies to the next recording. |
+| `/api/ble` | `{"enabled":0\|1}` | Bluetooth LE status broadcast; applied from the next boot. |
+| `POST /api/settings/reset` | — | Clears every host-set setting; the camera reboots. |
 
 > **Control endpoints** mirror the Android UVC extension-unit controls so both
 > transports expose the same surface (calibration store/serve, LED, encoder
@@ -63,7 +89,11 @@ see `InterfacePinning.swift`.
 
 ## Live video (port 8080)
 
-The server emits Annex-B bytes (3- or 4-byte start codes + NAL payload). The
+The server emits Annex-B bytes (3- or 4-byte start codes + NAL payload) in
+the codec the camera is set to stream, whatever the URL suffix says. The
+response's `Content-Type` (`video/H264` or `video/H265`) is authoritative, and
+the SDK follows it. Stereo cameras send one 3840×1080 side-by-side frame: the
+left eye is x 0–1919, the right eye x 1920–3839. The
 first bytes after a connection always include the parameter sets
 (SPS/PPS, plus VPS for H.265) so a decoder can start without waiting for the
 next GOP boundary.

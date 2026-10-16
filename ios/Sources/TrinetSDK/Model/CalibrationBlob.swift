@@ -146,8 +146,9 @@ extension CalibrationBlob {
 }
 
 /// CRC-32/IEEE 802.3 (reflected, poly 0xEDB88320) — matches zlib.crc32,
-/// java.util.zip.CRC32, and the firmware implementation.
-private func crc32ieee<S: Sequence>(_ bytes: S) -> UInt32 where S.Element == UInt8 {
+/// java.util.zip.CRC32, and the firmware implementation. Shared by the mono
+/// (`CalibrationBlob`) and stereo (`StereoCalibrationBlob`) codecs.
+func crc32ieee<S: Sequence>(_ bytes: S) -> UInt32 where S.Element == UInt8 {
     var crc: UInt32 = 0xFFFFFFFF
     for byte in bytes {
         crc ^= UInt32(byte)

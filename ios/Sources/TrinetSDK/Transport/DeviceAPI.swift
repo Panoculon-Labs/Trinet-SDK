@@ -1,15 +1,25 @@
 // DeviceAPI.swift — HTTP JSON client for the device API on :8081.
 //
-// Endpoint surface is documented in ios/docs/PROTOCOLS.md. Live endpoints today:
-//   GET  /api/device_id
-//   GET  /api/state
-//   GET  /api/storage
-//   GET  /api/time
-// Stub endpoints (return 501 — feature-detect via this client):
-//   POST /api/time, GET/POST /api/recording, /api/recording/start_at,
-//   /api/sessions, /api/files, /api/logs
+// The full endpoint table lives in docs/PROTOCOLS.md. Groups:
+//   identity / state   GET /api/device_id, /api/state, /api/storage, /api/time,
+//                      /api/thermal, /api/thermal/limit
+//   control            /api/led, /api/mode, /api/ble, /api/calibration(/lock),
+//                      /api/audio(/rate), /api/imu/stream
+//   video              /api/video/* (bitrate, rcmode, gop, image controls,
+//                      white balance, exposure, hue, awb_tune, tnr)
+// Errors come back as 4xx/5xx with a {"error":"..."} body; this client
+// surfaces the status code as `APIError.http(status)`. Endpoints a given
+// firmware/model doesn't implement answer 404 — feature-detect on that.
 
 import Foundation
+
+/// Clamp a linear Q8 gain to the wire's u16 range.
+func gain_q8Clamped(_ q8: Int) -> Int { min(max(q8, 0), 0xFFFF) }
+
+/// Convert a dB gain to linear Q8 (256 = 0 dB). The app's gain slider is in dB.
+public func trinetAudioGainDbToQ8(_ db: Double) -> Int {
+    gain_q8Clamped(Int((256.0 * pow(10.0, db / 20.0)).rounded()))
+}
 
 public actor DeviceAPI {
     public let baseURL: URL
@@ -34,10 +44,42 @@ public actor DeviceAPI {
 
     // MARK: - Decoded payloads
 
-    public struct DeviceIdResponse: Sendable, Codable {
+    /// GET /api/device_id. Older firmware returns only `device_id`, `product`,
+    /// `mode` (and sometimes `generation`), so every other field is optional.
+    /// Use `TrinetDeviceInfo(response)` for the typed, fallback-aware view.
+    public struct DeviceIdResponse: Sendable, Codable, Equatable {
+        public struct Canvas: Sendable, Codable, Equatable {
+            public let width: Int
+            public let height: Int
+            public init(width: Int, height: Int) { self.width = width; self.height = height }
+        }
         public let device_id: String
         public let product: String
         public let mode: String
+        /// Hardware generation, e.g. "v4" (Pro Mono), "v5" (Pro Stereo), "v6" (Pro Stereo GS).
+        public let generation: String?
+        /// "pro-mono" | "pro-stereo" | "pro-stereo-gs" | "mini".
+        public let model: String?
+        /// Firmware version string, e.g. "0.5.10", or "unknown".
+        public let firmware: String?
+        /// "shipping" | "dev".
+        public let build: String?
+        /// Number of image sensors (1 or 2).
+        public let cameras: Int?
+        /// "single" | "side_by_side".
+        public let layout: String?
+        /// Size of the encoded video frame (3840x1080 on stereo boards).
+        public let canvas: Canvas?
+
+        public init(device_id: String, product: String, mode: String,
+                    generation: String? = nil, model: String? = nil,
+                    firmware: String? = nil, build: String? = nil,
+                    cameras: Int? = nil, layout: String? = nil, canvas: Canvas? = nil) {
+            self.device_id = device_id; self.product = product; self.mode = mode
+            self.generation = generation; self.model = model
+            self.firmware = firmware; self.build = build
+            self.cameras = cameras; self.layout = layout; self.canvas = canvas
+        }
     }
 
     public struct StateResponse: Sendable, Codable {
@@ -71,7 +113,7 @@ public actor DeviceAPI {
     public func state()    async throws -> StateResponse    { try await get("api/state") }
     public func storage()  async throws -> StorageResponse  { try await get("api/storage") }
     public func time()     async throws -> TimeResponse     { try await get("api/time") }
-    /// Camera internal temperature + a host-pause signal. Poll ~1 Hz while recording:
+    /// Camera temperature + a host-pause signal. Poll ~1 Hz while recording:
     /// when `.paused` is true the camera is too hot — stop recording (and preview)
     /// and resume when it clears. The streaming analogue of SD pause_resume.
     public func thermal()  async throws -> ThermalResponse  { try await get("api/thermal") }
@@ -144,7 +186,30 @@ public actor DeviceAPI {
         public let mode: String
     }
 
-    /// Upload a calibration blob (raw 200 bytes) — POST /api/calibration.
+    /// Mic audio control. gain_q8 is linear Q8 (256 = 0 dB / unity); muted/agc
+    /// are 0/1. The camera applies the gain to the recording/stream itself.
+    public struct AudioCommand: Sendable, Codable {
+        public let gain_q8: Int
+        public let muted: Int
+        public let agc: Int
+        public init(gainQ8: Int, muted: Bool, agc: Bool) {
+            self.gain_q8 = gain_q8Clamped(gainQ8); self.muted = muted ? 1 : 0; self.agc = agc ? 1 : 0
+        }
+    }
+
+    public struct AudioResponse: Sendable, Codable {
+        public let gain_q8: Int
+        public let muted: Int
+        public let agc: Int
+        /// Gain in decibels (20·log10(gain_q8/256)); 0 dB at unity.
+        public var gainDb: Double { 20.0 * log10(Double(max(1, gain_q8)) / 256.0) }
+        public var isMuted: Bool { muted != 0 }
+        public var isAgc: Bool { agc != 0 }
+    }
+
+    /// Upload a raw calibration blob — POST /api/calibration (octet-stream).
+    /// 200 bytes for a mono camera (TBLC v1), 300 bytes for a stereo camera
+    /// (TBLC v2). The camera stores it opaquely and serves it back.
     public func setCalibration(_ blob: Data) async throws {
         try await post("api/calibration", contentType: "application/octet-stream", body: blob)
     }
@@ -200,16 +265,298 @@ public actor DeviceAPI {
                        body: try JSONEncoder().encode(ModeCommand(mode: mode)))
     }
 
+    /// Set mic gain (Q8, 256 = unity) + mute + auto-gain — POST /api/audio. Live
+    /// (no reboot); the gain is applied on the camera so it changes the actual
+    /// recording, not just playback. When agc is true the camera auto-levels and
+    /// the manual gain is ignored.
+    public func setAudio(gainQ8: Int, muted: Bool, agc: Bool) async throws {
+        try await post("api/audio", contentType: "application/json",
+                       body: try JSONEncoder().encode(AudioCommand(gainQ8: gainQ8, muted: muted, agc: agc)))
+    }
+
+    /// Current mic gain + mute + auto-gain — GET /api/audio.
+    public func audio() async throws -> AudioResponse { try await get("api/audio") }
+
+    // MARK: - Camera settings (full UVC/Android parity)
+
+    // Shared payloads.
+    public struct ValueCommand: Sendable, Codable { public let value: Int; public init(value: Int) { self.value = value } }
+    public struct ValueResponse: Sendable, Codable { public let value: Int }
+    public struct HzCommand: Sendable, Codable { public let hz: Int; public init(hz: Int) { self.hz = hz } }
+    public struct HzResponse: Sendable, Codable { public let hz: Int }
+    public struct FramesCommand: Sendable, Codable { public let frames: Int; public init(frames: Int) { self.frames = frames } }
+    public struct FramesResponse: Sendable, Codable { public let frames: Int }
+    public struct EnabledCommand: Sendable, Codable { public let enabled: Int; public init(_ on: Bool) { self.enabled = on ? 1 : 0 } }
+    public struct EnabledResponse: Sendable, Codable { public let enabled: Int; public var isEnabled: Bool { enabled != 0 } }
+    public struct LockedCommand: Sendable, Codable { public let locked: Int; public init(_ on: Bool) { self.locked = on ? 1 : 0 } }
+    public struct LockedResponse: Sendable, Codable { public let locked: Int; public var isLocked: Bool { locked != 0 } }
+    public struct ExposureRangeCommand: Sendable, Codable { public let min_us: Int; public let max_us: Int; public init(minUs: Int, maxUs: Int) { self.min_us = minUs; self.max_us = maxUs } }
+    public struct ExposureRangeResponse: Sendable, Codable { public let min_us: Int; public let max_us: Int }
+    public struct WbComponentCommand: Sendable, Codable { public let r_gain: Int; public let b_gain: Int; public init(rGain: Int, bGain: Int) { self.r_gain = rGain; self.b_gain = bGain } }
+    public struct WbComponentResponse: Sendable, Codable { public let r_gain: Int; public let b_gain: Int }
+    public struct ExposureModeCommand: Sendable, Codable { public let mode: String; public init(mode: String) { self.mode = mode } }
+    public struct ExposureModeResponse: Sendable, Codable { public let mode: String }
+
+    private func postJSON<T: Encodable>(_ path: String, _ body: T) async throws {
+        try await post(path, contentType: "application/json", body: try JSONEncoder().encode(body))
+    }
+
+    // §5 image controls — LIVE (no reboot, no stream gap); the camera actuates
+    // the ISP immediately. Units match the UVC Processing-Unit host scale.
+
+    /// Brightness 0...255 (128 = neutral) — POST /api/video/brightness.
+    public func setBrightness(_ v: Int) async throws { try await postJSON("api/video/brightness", ValueCommand(value: v)) }
+    public func brightness() async throws -> ValueResponse { try await get("api/video/brightness") }
+
+    /// Contrast 0...255 (128 = neutral) — POST /api/video/contrast.
+    public func setContrast(_ v: Int) async throws { try await postJSON("api/video/contrast", ValueCommand(value: v)) }
+    public func contrast() async throws -> ValueResponse { try await get("api/video/contrast") }
+
+    /// Saturation 0...200 % (0 = grayscale, 100 = neutral) — POST /api/video/saturation.
+    public func setSaturation(_ v: Int) async throws { try await postJSON("api/video/saturation", ValueCommand(value: v)) }
+    public func saturation() async throws -> ValueResponse { try await get("api/video/saturation") }
+
+    /// Sharpness 0...100 — POST /api/video/sharpness.
+    public func setSharpness(_ v: Int) async throws { try await postJSON("api/video/sharpness", ValueCommand(value: v)) }
+    public func sharpness() async throws -> ValueResponse { try await get("api/video/sharpness") }
+
+    /// Manual AE gain multiplier (only honoured when exposure mode is manual) — POST /api/video/gain.
+    public func setGain(_ v: Int) async throws { try await postJSON("api/video/gain", ValueCommand(value: v)) }
+    public func gain() async throws -> ValueResponse { try await get("api/video/gain") }
+
+    /// White-balance auto (1) vs manual (0) — POST /api/video/white_balance_auto.
+    public func setWhiteBalanceAuto(_ on: Bool) async throws { try await postJSON("api/video/white_balance_auto", ValueCommand(value: on ? 1 : 0)) }
+    public func whiteBalanceAuto() async throws -> ValueResponse { try await get("api/video/white_balance_auto") }
+
+    /// White-balance colour temperature 2800...6500 K (switches WB to manual) — POST /api/video/white_balance_temperature.
+    public func setWhiteBalanceTemperature(kelvin: Int) async throws { try await postJSON("api/video/white_balance_temperature", ValueCommand(value: kelvin)) }
+    public func whiteBalanceTemperature() async throws -> ValueResponse { try await get("api/video/white_balance_temperature") }
+
+    /// White Balance Component: per-channel Red/Blue gain (Q8.8, 256 = gain 1.0) — POST /api/video/white_balance_component.
+    public func setWhiteBalanceComponent(rGain: Int, bGain: Int) async throws { try await postJSON("api/video/white_balance_component", WbComponentCommand(rGain: rGain, bGain: bGain)) }
+    public func whiteBalanceComponent() async throws -> WbComponentResponse { try await get("api/video/white_balance_component") }
+
+    /// Exposure mode "auto" | "manual" — POST /api/video/exposure_mode.
+    public func setExposureMode(_ mode: String) async throws { try await postJSON("api/video/exposure_mode", ExposureModeCommand(mode: mode)) }
+    public func exposureMode() async throws -> ExposureModeResponse { try await get("api/video/exposure_mode") }
+
+    // §5 exposure range + mains frequency — PERSISTED; the camera reboots to
+    // apply (re-enumerates, won't answer again until back), like setBitrate.
+
+    /// Auto-exposure min/max in microseconds — POST /api/video/exposure.
+    public func setExposureRange(minUs: Int, maxUs: Int) async throws { try await postJSON("api/video/exposure", ExposureRangeCommand(minUs: minUs, maxUs: maxUs)) }
+    public func exposureRange() async throws -> ExposureRangeResponse { try await get("api/video/exposure") }
+
+    /// Mains/anti-flicker frequency (50 | 60 Hz) — POST /api/video/power_line.
+    public func setMainsFrequency(hz: Int) async throws { try await postJSON("api/video/power_line", HzCommand(hz: hz)) }
+    public func mainsFrequency() async throws -> HzResponse { try await get("api/video/power_line") }
+
+    // §6 encoder/stream controls.
+
+    /// Encoder GOP length in frames (1...600) — POST /api/video/gop. Persisted;
+    /// the camera reboots to apply (like setBitrate).
+    public func setGop(frames: Int) async throws { try await postJSON("api/video/gop", FramesCommand(frames: frames)) }
+    public func gop() async throws -> FramesResponse { try await get("api/video/gop") }
+
+    // Codecs. Two independent settings:
+    //   /api/video/stream_codec — the live NCM stream (:8080). Changing it
+    //     restarts the camera's stream server: :8080 drops and returns in
+    //     ~5–10 s; the USB link and this API stay up. Older firmware: 404
+    //     (the stream is H.264).
+    //   /api/video/codec — the camera's own SD-card recordings. No restart.
+
+    public struct CodecCommand: Sendable, Codable {
+        public let codec: String   // "h264" | "h265"
+        public init(codec: String) { self.codec = codec }
+    }
+    /// GET /api/video/stream_codec and GET /api/video/codec.
+    public struct CodecResponse: Sendable, Codable, Equatable {
+        public let codec: String
+        /// "host" (set by a client) | "default" (firmware default).
+        public let source: String?
+    }
+    /// POST /api/video/stream_codec acknowledgement.
+    public struct StreamCodecSetResponse: Sendable, Codable, Equatable {
+        public let status: String?
+        public let codec: String?
+        /// true: the stream server restarts to apply.
+        public let restart: Bool?
+    }
+    /// POST /api/video/codec acknowledgement.
+    public struct RecordingCodecSetResponse: Sendable, Codable, Equatable {
+        public let status: String?
+        public let codec: String?
+        public let reboot: Bool?
+    }
+
+    /// Live-stream codec — GET /api/video/stream_codec. 404 on older firmware.
+    public func streamCodec() async throws -> CodecResponse { try await get("api/video/stream_codec") }
+
+    /// Set the live-stream codec — POST /api/video/stream_codec. Persisted; the
+    /// camera restarts its stream server (the :8080 stream drops for ~5–10 s;
+    /// the API stays up). Cleared by a settings reset.
+    @discardableResult
+    public func setStreamCodec(_ codec: String) async throws -> StreamCodecSetResponse {
+        try await postDecoding("api/video/stream_codec", CodecCommand(codec: codec))
+    }
+
+    /// SD-card recording codec — GET /api/video/codec.
+    public func recordingCodec() async throws -> CodecResponse { try await get("api/video/codec") }
+
+    /// Set the SD-card recording codec — POST /api/video/codec. Persisted; no restart.
+    @discardableResult
+    public func setRecordingCodec(_ codec: String) async throws -> RecordingCodecSetResponse {
+        try await postDecoding("api/video/codec", CodecCommand(codec: codec))
+    }
+
+    /// Enable/disable the in-band IMU SEI stream — POST /api/imu/stream. Live.
+    public func setImuStream(_ enabled: Bool) async throws { try await postJSON("api/imu/stream", EnabledCommand(enabled)) }
+    public func imuStream() async throws -> EnabledResponse { try await get("api/imu/stream") }
+
+    /// Lock/unlock calibration writes — POST /api/calibration/lock. Live + persisted.
+    /// While locked the camera rejects calibration uploads (403).
+    public func setCalibrationLock(_ locked: Bool) async throws { try await postJSON("api/calibration/lock", LockedCommand(locked)) }
+    public func calibrationLock() async throws -> LockedResponse { try await get("api/calibration/lock") }
+
+    // §10 audio sample rate.
+
+    /// Audio capture sample rate (16000 | 44100 | 48000 Hz) — POST /api/audio/rate.
+    /// Persisted; the camera reboots to apply (the AAC encoder is configured at
+    /// capture start).
+    public func setAudioRate(hz: Int) async throws { try await postJSON("api/audio/rate", HzCommand(hz: hz)) }
+    public func audioRate() async throws -> HzResponse { try await get("api/audio/rate") }
+
+    // MARK: - LED read-back, thermal limit, AWB tune, hue, exposure time,
+    //         BLE broadcast, TNR
+
+    /// Status LED channel state (0/1 each) — GET /api/led.
+    public struct LedState: Sendable, Codable, Equatable {
+        public let r: Int
+        public let g: Int
+        public let b: Int
+        public var red: Bool { r != 0 }
+        public var green: Bool { g != 0 }
+        public var blue: Bool { b != 0 }
+    }
+
+    /// GET /api/thermal/limit. `celsius == 0` means "firmware default".
+    public struct ThermalLimitResponse: Sendable, Codable, Equatable {
+        public let celsius: Int
+        public let min: Int?
+        public let max: Int?
+        public var isDefault: Bool { celsius == 0 }
+    }
+    public struct CelsiusCommand: Sendable, Codable { public let celsius: Int; public init(celsius: Int) { self.celsius = celsius } }
+    /// POST /api/thermal/limit acknowledgement.
+    public struct ThermalLimitSetResponse: Sendable, Codable, Equatable {
+        public let status: String?
+        public let celsius: Int?
+        public let reboot: Bool?
+    }
+
+    /// GET /api/video/awb_tune — the user AWB tuning anchor table.
+    public struct AwbTuneResponse: Sendable, Codable, Equatable {
+        /// Colour temperature (K) of the most recent anchor.
+        public let cct: Double
+        /// Red / blue gain of that anchor.
+        public let r: Double
+        public let b: Double
+        /// Number of anchors in the table (0 = untuned, firmware defaults).
+        public let anchors: Int
+    }
+    public struct AwbTuneCommand: Sendable, Codable {
+        public let cct: Int
+        public let r: Double
+        public let b: Double
+        public init(cct: Int, r: Double, b: Double) { self.cct = cct; self.r = r; self.b = b }
+    }
+    public struct AwbTuneSetResponse: Sendable, Codable, Equatable {
+        public let status: String?
+        public let anchors: Int?
+    }
+
+    /// POST /api/ble acknowledgement (`next_boot`: applied from the next boot).
+    public struct BleSetResponse: Sendable, Codable, Equatable {
+        public let status: String?
+        public let enabled: Int?
+        public let next_boot: Bool?
+    }
+
+
+    /// Read back the status LED channels — GET /api/led.
+    public func led() async throws -> LedState { try await get("api/led") }
+
+    /// Recording thermal limit — GET /api/thermal/limit.
+    public func thermalLimit() async throws -> ThermalLimitResponse { try await get("api/thermal/limit") }
+
+    /// Set the recording thermal limit (75...100 °C) — POST /api/thermal/limit.
+    /// Persisted; applies to the next recording, no reboot.
+    @discardableResult
+    public func setThermalLimit(celsius: Int) async throws -> ThermalLimitSetResponse {
+        try await postDecoding("api/thermal/limit", CelsiusCommand(celsius: celsius))
+    }
+
+    /// AWB tuning table summary — GET /api/video/awb_tune.
+    public func awbTune() async throws -> AwbTuneResponse { try await get("api/video/awb_tune") }
+
+    /// Add an AWB tuning anchor (cct K, r/b gains) — POST /api/video/awb_tune.
+    /// `cct <= 0` clears the table back to firmware defaults.
+    @discardableResult
+    public func setAwbTune(cct: Int, r: Double, b: Double) async throws -> AwbTuneSetResponse {
+        try await postDecoding("api/video/awb_tune", AwbTuneCommand(cct: cct, r: r, b: b))
+    }
+
+    /// Hue 0...100 (50 = neutral) — POST /api/video/hue. Live.
+    public func setHue(_ v: Int) async throws { try await postJSON("api/video/hue", ValueCommand(value: v)) }
+    public func hue() async throws -> ValueResponse { try await get("api/video/hue") }
+
+    /// Manual exposure time in units of 100 µs (5...2500 → 0.5 ms...250 ms) —
+    /// POST /api/video/exposure_time. Live. Answers 409 while exposure mode is
+    /// "auto"; switch to manual first.
+    public func setExposureTime(_ units100us: Int) async throws {
+        try await postJSON("api/video/exposure_time", ValueCommand(value: units100us))
+    }
+    public func exposureTime() async throws -> ValueResponse { try await get("api/video/exposure_time") }
+
+    /// Bluetooth LE status broadcast on/off — GET /api/ble.
+    public func ble() async throws -> EnabledResponse { try await get("api/ble") }
+
+    /// Turn the Bluetooth LE status broadcast on/off — POST /api/ble. Persisted;
+    /// takes effect from the next boot (`next_boot: true`).
+    @discardableResult
+    public func setBle(_ enabled: Bool) async throws -> BleSetResponse {
+        try await postDecoding("api/ble", EnabledCommand(enabled))
+    }
+
+    /// Temporal noise reduction (Pro Stereo GS only; 404 elsewhere) — GET /api/video/tnr.
+    public func tnr() async throws -> ValueResponse { try await get("api/video/tnr") }
+    /// Enable/disable temporal noise reduction — POST /api/video/tnr {"value":0|1}.
+    public func setTnr(_ on: Bool) async throws { try await postJSON("api/video/tnr", ValueCommand(value: on ? 1 : 0)) }
+
+
+
+    private func postDecoding<B: Encodable, T: Decodable>(_ path: String, _ body: B) async throws -> T {
+        let data = try await postData(path, contentType: "application/json",
+                                      body: try JSONEncoder().encode(body))
+        do { return try JSONDecoder().decode(T.self, from: data) }
+        catch { throw APIError.decode(error) }
+    }
+
     private func post(_ path: String, contentType: String, body: Data) async throws {
+        _ = try await postData(path, contentType: contentType, body: body)
+    }
+
+    private func postData(_ path: String, contentType: String, body: Data) async throws -> Data {
         let url = baseURL.appendingPathComponent(path)
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue(contentType, forHTTPHeaderField: "Content-Type")
         req.httpBody = body
         do {
-            let (_, resp) = try await session.data(for: req)
+            let (data, resp) = try await session.data(for: req)
             guard let http = resp as? HTTPURLResponse else { throw APIError.http(0) }
             guard (200..<300).contains(http.statusCode) else { throw APIError.http(http.statusCode) }
+            return data
         } catch let e as APIError {
             throw e
         } catch {

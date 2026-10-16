@@ -62,6 +62,27 @@ public final class Mp4Writer {
     private var sps: Data?
     private var pps: Data?
 
+    // Optional AAC audio track. The audio format is learned from the first ADTS
+    // frame; the input must be added BEFORE startWriting(), so the session is
+    // NOT opened on the first video frame: `gate` holds it closed until either
+    // the audio format is known or a short grace window (~0.5 s of video) has
+    // passed with no audio at all (camera without a microphone → video-only
+    // file). Video frames that arrive while the gate is closed are dropped —
+    // the recording simply starts a fraction of a second later, always on a
+    // keyframe. Audio frames are buffered (bounded) and flushed once the video
+    // clock origin (firstSofNs) is known; `rebaser` places them on the video
+    // timeline.
+    private var audioInput: AVAssetWriterInput?
+    private var audioFormat: CMAudioFormatDescription?
+    /// `auSofNs`: frame time of the video access unit this audio arrived with;
+    /// nil until that AU's picture is seen.
+    private var pendingAudio: [(adts: Data, ptsUs: Int64, auSofNs: UInt64?)] = []
+    private static let maxPendingAudio = 256          // ≈5 s of AAC at 48 kHz
+    private var gate = SessionStartGate()
+    private var rebaser = AudioRebaser()
+    private var appendedAudio = 0
+    private var droppedLateAudio = 0                  // audio after a video-only start
+
     public init(url: URL, codec: VideoCodec, width: Int, height: Int, fps: Double) throws {
         self.url = url
         self.codec = codec
@@ -93,6 +114,70 @@ public final class Mp4Writer {
         }
     }
 
+    /// Submit one self-describing ADTS AAC-LC frame with its CLOCK_MONOTONIC
+    /// presentation time (µs) — the same clock as the video frames' SoF. Learns
+    /// the audio format from the first frame (so the audio track can be added at
+    /// session start) and rebases onto the video timeline. Safe no-op once the
+    /// session opened video-only (audio arrived too late to add a track).
+    public func appendAudio(adts: Data, ptsUs: Int64) {
+        stateLock.lock(); defer { stateLock.unlock() }
+        if finished { return }
+        if audioFormat == nil { audioFormat = AACSupport.formatDescription(from: adts) }
+        guard audioFormat != nil else { return }
+        // Once started video-only, we can't add a track; drop.
+        if sessionStarted && audioInput == nil {
+            if droppedLateAudio == 0 {
+                NSLog("TrinetSDK Mp4Writer: audio arrived after a video-only start — not recorded")
+            }
+            droppedLateAudio += 1
+            return
+        }
+        pendingAudio.append((adts, ptsUs, nil))
+        if pendingAudio.count > Self.maxPendingAudio {
+            pendingAudio.removeFirst(pendingAudio.count - Self.maxPendingAudio)
+        }
+        drainPendingAudio()
+    }
+
+    /// Stamp buffered audio that hasn't been tied to a picture yet with the
+    /// frame time of the access unit it arrived with (the audio SEI precedes
+    /// that AU's slices). Caller holds stateLock.
+    private func anchorPendingAudio(toAccessUnitSof sof: UInt64) {
+        for i in pendingAudio.indices.reversed() {
+            if pendingAudio[i].auSofNs != nil { break }
+            pendingAudio[i].auSofNs = sof
+        }
+    }
+
+    /// Write buffered audio once the session is open and the video clock origin
+    /// (firstSofNs) is known, so audio rebases onto the video timeline. Frames
+    /// whose access unit hasn't been seen yet stay buffered. Caller holds
+    /// stateLock.
+    private func drainPendingAudio() {
+        guard sessionStarted, let input = audioInput, let format = audioFormat,
+              let base = firstSofNs else { return }
+        guard writer.status == .writing else { return }
+        var consumed = 0
+        for f in pendingAudio {
+            guard let auSof = f.auSofNs else { break }       // AU not seen yet
+            guard input.isReadyForMoreMediaData else { break }
+            consumed += 1
+            let decision = rebaser.place(audioNs: f.ptsUs &* 1000,
+                                         auSofNs: Int64(bitPattern: auSof),
+                                         videoBaseNs: Int64(bitPattern: base))
+            if rebaser.didRebaseOnLastCall {
+                NSLog("TrinetSDK Mp4Writer: audio clock inconsistent with video (audio \(f.ptsUs) us vs frame \(auSof / 1000) us) — rebasing audio onto the video timeline")
+            }
+            guard case .write(let rel) = decision else { continue }
+            let pts = CMTime(value: CMTimeValue(rel), timescale: 1_000_000_000)
+            if let sb = AACSupport.sampleBuffer(adts: f.adts, format: format, pts: pts) {
+                input.append(sb)
+                appendedAudio += 1
+            }
+        }
+        if consumed > 0 { pendingAudio.removeFirst(consumed) }
+    }
+
     /// Finalize the file. Runs in a detached task. We finalize ONLY via
     /// finishWriting() and ONLY when the snapshotted status is .writing —
     /// never input.markAsFinished(), which raised an uncatchable Obj-C
@@ -108,11 +193,12 @@ public final class Mp4Writer {
         finished = true
         let status = writer.status
         let started = sessionStarted
-        stateLock.unlock()
-
         // Diagnostic marker so we can confirm THIS build is running and see
         // exactly how many frames the recorder actually wrote.
-        NSLog("TrinetSDK Mp4Writer.finish status=\(status.rawValue) started=\(started) sawKeyframe=\(sawKeyframe) vclSeen=\(vclSeen) appended=\(appendedSamples) droppedNotReady=\(droppedNotReady)")
+        let diag = "codec=\(codec.rawValue) status=\(status.rawValue) started=\(started) sawKeyframe=\(sawKeyframe) vclSeen=\(vclSeen) appended=\(appendedSamples) droppedNotReady=\(droppedNotReady) audioTrack=\(audioInput != nil) audio=\(appendedAudio) audioRebased=\(rebaser.rebased) droppedLateAudio=\(droppedLateAudio)"
+        stateLock.unlock()
+
+        NSLog("TrinetSDK Mp4Writer.finish \(diag)")
 
         // Only a writer in .writing with an open session can be finalized.
         guard status == .writing, started else {
@@ -149,8 +235,7 @@ public final class Mp4Writer {
         case 5, 1:            // IDR slice, P/B slice
             if formatDesc == nil { try buildH264Format() }
             if formatDesc == nil { return false }   // no SPS/PPS yet
-            try startSessionIfNeeded()
-            try appendVCL(nal, isKey: nalType == 5, timing: timing, seiPrefix: seiPrefix)
+            try handleVCL(nal, isKey: nalType == 5, timing: timing, seiPrefix: seiPrefix)
         default:
             break
         }
@@ -189,10 +274,9 @@ public final class Mp4Writer {
             guard nalType <= 31 else { break }
             if formatDesc == nil { try buildH265Format() }
             if formatDesc == nil { return false }
-            try startSessionIfNeeded()
             // Key NAL types: 16..23 (BLA_W_LP..RSV_IRAP_VCL23) — IDR is 19/20.
             let isKey = (nalType >= 16 && nalType <= 23)
-            try appendVCL(nal, isKey: isKey, timing: timing, seiPrefix: seiPrefix)
+            try handleVCL(nal, isKey: isKey, timing: timing, seiPrefix: seiPrefix)
         }
         return sessionStarted
     }
@@ -214,6 +298,22 @@ public final class Mp4Writer {
 
     // MARK: - Common
 
+    /// One picture slice. Ties buffered audio to this access unit, keeps the
+    /// session closed until `gate` allows it (audio format known, or the grace
+    /// window passed without audio — and always on a keyframe), then writes.
+    private func handleVCL(_ nal: Data, isKey: Bool, timing: FrameTiming?,
+                           seiPrefix: [Data]) throws {
+        vclSeen += 1
+        if let sof = timing?.sofNs, sof != 0 { anchorPendingAudio(toAccessUnitSof: sof) }
+        if !sessionStarted {
+            guard gate.shouldOpen(isKey: isKey, audioFormatKnown: audioFormat != nil) else {
+                return   // dropped: waiting for audio format / grace window / keyframe
+            }
+            try startSessionIfNeeded()
+        }
+        try appendVCL(nal, isKey: isKey, timing: timing, seiPrefix: seiPrefix)
+    }
+
     private func startSessionIfNeeded() throws {
         if sessionStarted { return }
         guard let formatDesc else { throw Mp4WriterError.missingParameterSets }
@@ -228,6 +328,16 @@ public final class Mp4Writer {
         writer.add(inp)
         self.input = inp
 
+        // If the audio format is known (the gate waits for it, up to the grace
+        // window), add a passthrough AAC track too — this must happen before
+        // startWriting(). Otherwise the file is video-only for its lifetime.
+        if let audioFormat, audioInput == nil {
+            let ainp = AVAssetWriterInput(mediaType: .audio, outputSettings: nil,
+                                          sourceFormatHint: audioFormat)
+            ainp.expectsMediaDataInRealTime = true
+            if writer.canAdd(ainp) { writer.add(ainp); self.audioInput = ainp }
+        }
+
         guard writer.startWriting() else {
             if let e = writer.error { throw Mp4WriterError.writerFailed(e) }
             throw Mp4WriterError.sessionStart(-1)
@@ -239,7 +349,6 @@ public final class Mp4Writer {
     private func appendVCL(_ nal: Data, isKey: Bool, timing frameTiming: FrameTiming?,
                            seiPrefix: [Data] = []) throws {
         guard let formatDesc else { throw Mp4WriterError.missingParameterSets }
-        vclSeen += 1
 
         // The first sample written MUST be a sync sample (IDR). The live
         // stream usually starts mid-GOP, so drop leading P/B frames until
@@ -269,7 +378,7 @@ public final class Mp4Writer {
         withUnsafeBytes(of: &len) { prefixed.append(contentsOf: $0) }
         prefixed.append(nal)
 
-        // PTS from the device's true capture time (TRINETVSYNC SEI), zero-based
+        // PTS from the device's true capture time (Trinet IMU SEI), zero-based
         // to the first written frame, so the MP4 timeline IS the device capture
         // timeline — and lines up with the .imu/.vts device-clock timestamps to
         // ~1 ms. Falls back to the synthetic frameIndex/fps clock only if the
@@ -330,6 +439,10 @@ public final class Mp4Writer {
         guard input.isReadyForMoreMediaData else { droppedNotReady += 1; return }
         input.append(sample)
         appendedSamples += 1
+
+        // firstSofNs is now set (above) — flush any audio buffered before the
+        // video clock origin existed, and keep the audio track in step.
+        drainPendingAudio()
     }
 }
 

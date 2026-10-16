@@ -30,7 +30,7 @@ final class RecordSink: @unchecked Sendable {
     private var frameNumber: UInt32 = 0
     private var sawKeyframe: Bool = false
     private var bytes: Int = 0
-    private let codec: VideoCodec
+    let codec: VideoCodec
 
     init(codec: VideoCodec,
          config: DeviceConfig,
@@ -38,7 +38,10 @@ final class RecordSink: @unchecked Sendable {
          iosOffsetNs: Int64,
          paramSets: [Data],
          in directory: URL,
-         baseName: String?) throws {
+         baseName: String?,
+         canvasWidth: Int? = nil,
+         canvasHeight: Int? = nil,
+         imuRateHz: Int = 562) throws {
         self.codec = codec
 
         let name = baseName ?? RecordSink.nextName(in: directory)
@@ -48,7 +51,7 @@ final class RecordSink: @unchecked Sendable {
         let vtsURL = base.appendingPathExtension("vts")
 
         let header = ImuFileWriter.Header(
-            sampleRateHz: 562, accelFs: 2, gyroFs: 3,
+            sampleRateHz: UInt32(max(1, imuRateHz)), accelFs: 2, gyroFs: 3,
             startTimeNs: 0, videoStartNs: 0,
             fsyncEnabled: true,
             deviceId: deviceId,
@@ -56,9 +59,12 @@ final class RecordSink: @unchecked Sendable {
 
         self.imu = try ImuFileWriter(url: imuURL, header: header)
         self.vts = try VtsFileWriter(url: vtsURL, fps: Double(config.fps))
+        // The MP4 is a passthrough mux: the track's real size comes from the
+        // SPS, not from these numbers. They're the nominal canvas — the full
+        // side-by-side frame (both eyes) on a stereo camera.
         let writer = try Mp4Writer(url: mp4URL, codec: codec,
-                                   width: config.resolution.width,
-                                   height: config.resolution.height,
+                                   width: canvasWidth ?? config.resolution.width,
+                                   height: canvasHeight ?? config.resolution.height,
                                    fps: Double(config.fps))
         // Prime the writer with the cached VPS/SPS/PPS so its
         // CMVideoFormatDescription is ready before the first live VCL —
@@ -94,7 +100,7 @@ final class RecordSink: @unchecked Sendable {
             guard Self.isKeyframe(nal) else { return }
             sawKeyframe = true
         }
-        // Real device-clock timing from the TRINETVSYNC SEI (falls back to host
+        // Real device-clock timing from the Trinet IMU SEI (falls back to host
         // arrival time only if the stream carried no SEI). .imu already stores
         // device CLOCK_MONOTONIC sample times, so .vts and .imu share one clock.
         let sof  = nal.timing?.sofNs ?? nal.hostReceivedNs
@@ -112,6 +118,15 @@ final class RecordSink: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         imu?.note(version: version)
         try? imu?.append(samples: samples)
+    }
+
+    /// Called synchronously from the video receive queue with the AU's embedded
+    /// AAC frames (v4 cameras). Routed into the MP4's AAC track; rebased onto the
+    /// video timeline by the writer. No-op on pre-v4 cameras (no audio SEI).
+    func writeAudio(_ frames: [AacFrame]) {
+        lock.lock(); defer { lock.unlock() }
+        guard let mp4 else { return }
+        for f in frames { mp4.appendAudio(adts: f.adts, ptsUs: f.ptsUs) }
     }
 
     /// Swap writers out under the lock, then finalize the snapshot off-lock

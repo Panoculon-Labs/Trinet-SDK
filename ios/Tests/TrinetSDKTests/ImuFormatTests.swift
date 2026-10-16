@@ -17,12 +17,11 @@ final class ImuFormatTests: XCTestCase {
         s.encode(into: &bytes)
         XCTAssertEqual(bytes.count, ImuSample.binarySize)
 
-        let decoded = ImuSample.decode(from: bytes)
-        XCTAssertNotNil(decoded)
-        XCTAssertEqual(decoded?.timestampNs, s.timestampNs)
-        XCTAssertEqual(decoded?.accel.z, s.accel.z, accuracy: 1e-5)
-        XCTAssertEqual(decoded?.tempC,  s.tempC,  accuracy: 1e-5)
-        XCTAssertEqual(decoded?.fsyncDelayUs, s.fsyncDelayUs, accuracy: 1e-3)
+        let decoded = try XCTUnwrap(ImuSample.decode(from: bytes))
+        XCTAssertEqual(decoded.timestampNs, s.timestampNs)
+        XCTAssertEqual(decoded.accel.z, s.accel.z, accuracy: 1e-5)
+        XCTAssertEqual(decoded.tempC,  s.tempC,  accuracy: 1e-5)
+        XCTAssertEqual(decoded.fsyncDelayUs, s.fsyncDelayUs, accuracy: 1e-3)
     }
 
     func testImuFileHeaderLayout() throws {
@@ -75,8 +74,8 @@ final class ImuFormatTests: XCTestCase {
         let s = ImuSample(timestampNs: 100, accel: .init(0, 0, 9.81), gyro: .zero,
                           mag: .init(40, -20, 60), fsyncDelayUs: 1800)
         var bytes = Data(); s.encode(into: &bytes)
-        let decoded = ImuSample.decode(from: bytes)
-        XCTAssertEqual(decoded?.magAgeUs, 1800, accuracy: 1e-3)
+        let decoded = try XCTUnwrap(ImuSample.decode(from: bytes))
+        XCTAssertEqual(decoded.magAgeUs, 1800, accuracy: 1e-3)
     }
 
     func testDeriveSofIsVersionAware() throws {
@@ -88,32 +87,32 @@ final class ImuFormatTests: XCTestCase {
         XCTAssertEqual(TrinetSEI.deriveSofNs(s, version: 5), 10_000_000)
     }
 
-    func testImuTelemetryDecode() throws {
-        // Synthesize the same packet shape the firmware emits.
-        var d = Data()
-        // Header (big-endian)
-        d.append(contentsOf: [0x54, 0x52, 0x49, 0x4D]) // "TRIM"
-        d.append(0x01)                                  // version
-        d.append(0x00)                                  // flags
-        d.append(contentsOf: [0x00, 0x02])              // sample_count = 2
-        d.append(contentsOf: [0x00, 0x00, 0x00, 0x00,
-                              0x00, 0x00, 0x00, 0x2A])  // seq = 42
-        d.append(contentsOf: [0x00, 0x00, 0x02, 0x32])  // rate = 562
-        d.append(contentsOf: [0x00, 0x50])              // sample_size = 80
-        d.append(contentsOf: [0x00, 0x00])              // reserved
-        // Two samples
-        let s1 = ImuSample(timestampNs: 1, accel: .init(0,0,9.81), gyro: .zero)
-        let s2 = ImuSample(timestampNs: 2, accel: .init(1,0,9.81), gyro: .zero)
-        s1.encode(into: &d); s2.encode(into: &d)
+    func testFrameCenteredAndRowOffset() throws {
+        // line_delay = readout_time_us / image_height = 1000 / 10 = 100 µs/row
+        // → 100_000 ns per row. With FRAME_CENTERED (0x08), r_ref = H/2 = 5.
+        let centered = ImuBatch(samples: [], accelFs: 2, gyroFs: 3, version: 6,
+                                frameSofTsNs: 1_000_000,
+                                timingFlags: ImuBatch.timingFrameCentered,
+                                readoutTimeUs: 1000)
+        XCTAssertTrue(centered.isFrameCentered)
+        XCTAssertEqual(centered.rowOffsetNs(row: 5, imageHeight: 10), 0)         // r_ref row
+        XCTAssertEqual(centered.rowOffsetNs(row: 0, imageHeight: 10), -500_000)
+        XCTAssertEqual(centered.rowOffsetNs(row: 10, imageHeight: 10), 500_000)
 
-        guard let pkt = ImuTelemetry.decode(data: d) else {
-            XCTFail("decode failed")
-            return
-        }
-        XCTAssertEqual(pkt.seq, 42)
-        XCTAssertEqual(pkt.sampleRateHz, 562)
-        XCTAssertEqual(pkt.samples.count, 2)
-        XCTAssertEqual(pkt.samples[1].timestampNs, 2)
-        XCTAssertEqual(pkt.samples[1].accel.x, 1.0, accuracy: 1e-5)
+        // Clear FRAME_CENTERED (still MID_EXPOSURE) → top-row reference, r_ref = 0.
+        let topRow = ImuBatch(samples: [], accelFs: 2, gyroFs: 3, version: 6,
+                              frameSofTsNs: 1_000_000,
+                              timingFlags: ImuBatch.timingMidExposure,
+                              readoutTimeUs: 1000)
+        XCTAssertFalse(topRow.isFrameCentered)
+        XCTAssertEqual(topRow.rowOffsetNs(row: 0, imageHeight: 10), 0)           // r_ref row
+        XCTAssertEqual(topRow.rowOffsetNs(row: 5, imageHeight: 10), 500_000)
+
+        // No readout span / no image height → no per-row correction.
+        XCTAssertEqual(topRow.rowOffsetNs(row: 5, imageHeight: 0), 0)
+        let noReadout = ImuBatch(samples: [], accelFs: 2, gyroFs: 3, version: 6,
+                                 timingFlags: ImuBatch.timingFrameCentered,
+                                 readoutTimeUs: 0)
+        XCTAssertEqual(noReadout.rowOffsetNs(row: 5, imageHeight: 10), 0)
     }
 }

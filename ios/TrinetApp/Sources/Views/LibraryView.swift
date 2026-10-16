@@ -335,6 +335,11 @@ struct PlayerScreen: View {
     }
 
     private func setup() {
+        // Recordings carry an AAC track; play it even with the ringer switch on
+        // silent (the live preview used to set this category; it is silent now).
+        let audioSession = AVAudioSession.sharedInstance()
+        try? audioSession.setCategory(.playback, mode: .moviePlayback)
+        try? audioSession.setActive(true)
         let p = AVPlayer(url: url)
         // Load + fuse the IMU track off the main thread; it's a quick parse but
         // a long recording has many samples.
