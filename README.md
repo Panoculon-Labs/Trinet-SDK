@@ -356,7 +356,7 @@ Swift Package Manager (zero external dependencies). On iOS the camera connects a
 ```swift
 // Consumer Package.swift
 dependencies: [
-    .package(url: "https://github.com/Panoculon-Labs/Trinet-SDK", from: "0.3.5"),
+    .package(url: "https://github.com/Panoculon-Labs/Trinet-SDK", from: "0.5.4"),
 ],
 targets: [
     .target(name: "MyApp", dependencies: [
@@ -366,7 +366,8 @@ targets: [
 ```
 
 In Xcode: **File → Add Package Dependencies…** → the repo URL → add the **TrinetSDK**
-product. (`Package.swift` is at the repo root because SwiftPM requires it there.)
+product. Both SDKs ship under one tag series. Tag `v0.5.4` carries iOS SDK 0.3.5
+(`TrinetSDK.version`); the Android AAR is unchanged at 0.5.3. (`Package.swift` is at the repo root because SwiftPM requires it there.)
 
 It supports Pro Mono, Pro Stereo and Pro Stereo GS:
 - **Video:** live preview in H.264 or H.265, with a lens picker on stereo

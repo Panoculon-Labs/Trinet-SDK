@@ -28,7 +28,7 @@ you depend on the repo directly:
 ```swift
 // Consumer Package.swift
 dependencies: [
-    .package(url: "https://github.com/Panoculon-Labs/Trinet-SDK", from: "0.3.5"),
+    .package(url: "https://github.com/Panoculon-Labs/Trinet-SDK", from: "0.5.4"),
 ],
 targets: [
     .target(name: "MyApp", dependencies: [
@@ -38,7 +38,7 @@ targets: [
 ```
 
 In Xcode: **File → Add Package Dependencies…** → enter the repo URL → **Up to
-Next Major `0.3.5`** → add the **TrinetSDK** product.
+Next Major `0.5.4`** → add the **TrinetSDK** product.
 
 `import TrinetSDK` and you're set.
 
@@ -467,10 +467,14 @@ one-line config file on the camera's SD card.
 
 ## Versioning
 
-`TrinetSDK.version` — currently **`0.3.5`**, tracking the git tag. Bump on
-on-disk-format changes, wire-protocol changes, or non-additive API changes. The
-Android SDK is versioned independently; both share the same on-disk and
-wire formats. Release notes are published under [**Releases**](../../releases).
+`TrinetSDK.version` — currently **`0.3.5`**. Bump it on on-disk-format
+changes, wire-protocol changes, or non-additive API changes.
+
+This repository ships both SDKs under **one git tag series**, which is what
+SwiftPM resolves. Tag **`v0.5.4`** carries iOS SDK **0.3.5** (the Android AAR
+in it is still 0.5.3). So pin `from: "0.5.4"`. Earlier tags carry older iOS
+code — `v0.5.3`, for example, has iOS 0.2.1. The Android SDK has its own
+version number; both SDKs share the same on-disk and wire formats. Release notes are published under [**Releases**](../../releases).
 
 ## License
 
