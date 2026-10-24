@@ -55,21 +55,6 @@ struct HomeView: View {
                     }
                 }
 
-                if let _ = device.selected {
-                    Section("Storage on Trinet") {
-                        if let t = device.storageTotal, let f = device.storageFree, t > 0 {
-                            let usedFrac = Double(t - f) / Double(t)
-                            HStack { Text("Used"); Spacer()
-                                Text("\(byteString(t - f)) of \(byteString(t)) · \(Int(usedFrac * 100))%")
-                                    .foregroundColor(.secondary) }
-                            ProgressView(value: usedFrac)
-                                .tint(usedFrac > 0.9 ? .red : .accentColor)
-                        } else {
-                            Text("No SD card mounted").foregroundColor(.secondary)
-                        }
-                    }
-                }
-
                 if let err = device.lastError {
                     Section {
                         Label(err, systemImage: "exclamationmark.triangle.fill")
@@ -101,7 +86,4 @@ struct HomeView: View {
         return parts.joined(separator: " · ")
     }
 
-    private func byteString(_ b: UInt64) -> String {
-        ByteCountFormatter.string(fromByteCount: Int64(b), countStyle: .file)
-    }
 }

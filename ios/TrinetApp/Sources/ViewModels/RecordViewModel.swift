@@ -1,5 +1,13 @@
 // RecordViewModel.swift — owns the live session for preview + IMU plot,
 // and drives recording through the session (no separate recorder object).
+//
+// Main-actor discipline: every method here runs on the main actor, so nothing
+// in them may block. The slow parts live elsewhere — the camera API and the
+// recorder setup are awaited (they run off the main actor), and the background
+// keep-alive's audio-session work runs on TrinetAudioSession.queue
+// (start()/stop() return immediately). Each step is a named interval
+// (TrinetDiagnostics), so a DEBUG build's stall detector can name whatever is
+// running if the main thread ever does stall.
 
 import AVFoundation
 import CoreMedia
@@ -35,16 +43,34 @@ final class RecordViewModel: ObservableObject {
     private var recordDir: URL?
     private var wasRecordingBeforeThermal = false
     private var startedAt = Date()
+    /// Set while the app is backgrounded with no recording running: the
+    /// session was closed so iOS can suspend the app, and is reopened on return.
+    private var closedForBackground = false
+    /// Bumped by every open and close. An openSession() whose await outlived a
+    /// close (or a newer open) sees a different value and discards its session
+    /// instead of starting a second stream that nothing would ever stop.
+    private var sessionGeneration = 0
+    /// True while a start is in flight, so a double tap can't start two
+    /// recordings (the first would never be finalized).
+    private var startingRecording = false
 
     /// The live preview is deliberately SILENT: the session's audio is not
     /// played here. It still reaches recordings (the SDK muxes it into the MP4's
     /// AAC track), and Library playback plays that track.
     func openSession(on device: TrinetDevice) async {
         if session != nil { return }
+        let iv = TrinetDiagnostics.begin("record.openSession")
+        defer { iv.end() }
+        sessionGeneration &+= 1
+        let generation = sessionGeneration
         self.device = device
         // The SDK asks the camera which codec it streams (and confirms it from
-        // the stream itself) — no app-side codec assumption.
+        // the stream itself) — no app-side codec assumption. Off the main
+        // actor; can take up to the API timeout if the camera is slow.
         let s = await device.liveSession()
+        // Closed, or superseded by another open, while we waited: drop this
+        // one. It was never started, so there is nothing to stop.
+        guard generation == sessionGeneration, session == nil else { return }
         self.session = s
         self.sampleStream = s.sampleStream
         self.sessionActive = true
@@ -61,6 +87,9 @@ final class RecordViewModel: ObservableObject {
     }
 
     func closeSession() async {
+        let iv = TrinetDiagnostics.begin("record.closeSession")
+        defer { iv.end() }
+        sessionGeneration &+= 1          // invalidates an open still in flight
         thermalTask?.cancel(); thermalTask = nil
         await stopRecording()
         imuTask?.cancel(); imuTask = nil
@@ -84,7 +113,9 @@ final class RecordViewModel: ObservableObject {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
                 guard let self, let dev = self.device else { continue }
                 guard let th = try? await dev.thermal() else { continue }
-                self.thermalTempC = th.temp_c
+                // Publish only on change: every assignment re-renders the
+                // whole Record screen.
+                if self.thermalTempC != th.temp_c { self.thermalTempC = th.temp_c }
                 if th.paused && !self.isThermalPaused {
                     await self.enterThermalPause()
                 } else if !th.paused && self.isThermalPaused {
@@ -96,7 +127,9 @@ final class RecordViewModel: ObservableObject {
 
     private func enterThermalPause() async {
         wasRecordingBeforeThermal = isRecording
-        await stopRecording()
+        // Pause, don't end: the background keep-alive stays on so a recording
+        // paused while the phone is locked can still resume after cooling.
+        await stopRecording(endKeepAlive: false)
         await session?.stop()       // stop the :8080 stream → camera idles → cools
         session = nil
         sampleStream = nil
@@ -112,42 +145,86 @@ final class RecordViewModel: ObservableObject {
             wasRecordingBeforeThermal = false
             await startRecording(into: dir)
         }
+        if !isRecording { BackgroundKeepAlive.shared.stop() }
     }
 
     func startRecording(into dir: URL) async {
-        guard let session else { return }
+        guard let session, !isRecording, !startingRecording else { return }
+        let iv = TrinetDiagnostics.begin("record.start")
+        defer { iv.end() }
+        startingRecording = true
+        defer { startingRecording = false }
         lastError = nil
         recordDir = dir
         do {
+            // File + AVAssetWriter setup — runs off the main actor.
             let h = try await session.startRecording(in: dir)
+            // The session was closed / replaced while the recorder was being
+            // set up (the SDK already finalized that sink).
+            guard self.session === session else { return }
             self.currentMp4URL = h.mp4URL
             self.startedAt = Date()
             self.elapsed = 0
             self.bytesRecorded = 0
             self.isRecording = true
+            // Keep running if the app is backgrounded or the phone locks, so
+            // the recording continues (like Android). Recording-only by design.
+            // Non-blocking: the audio session is activated on the audio queue
+            // (doing it here, on the main actor, was the Record-tap freeze).
+            BackgroundKeepAlive.shared.start()
             setLed(false)   // no visible capture indicator while recording
             tickerTask = Task { [weak self] in
                 while !Task.isCancelled {
                     try? await Task.sleep(nanoseconds: 250_000_000)
                     guard let self, let s = self.session else { return }
+                    // O(1) and lock-free w.r.t. the video thread (its own
+                    // counter lock), so this main-actor poll never waits on
+                    // an MP4 append.
                     let bytes = s.recordingBytes
-                    await MainActor.run {
-                        self.elapsed = Date().timeIntervalSince(self.startedAt)
-                        self.bytesRecorded = bytes
-                    }
+                    self.elapsed = Date().timeIntervalSince(self.startedAt)
+                    if self.bytesRecorded != bytes { self.bytesRecorded = bytes }
                 }
             }
+        } catch is CancellationError {
+            // Session stopped while starting (screen left / thermal pause).
         } catch {
             lastError = friendlyTrinetError(error)
         }
     }
 
-    func stopRecording() async {
+    func stopRecording(endKeepAlive: Bool = true) async {
+        let iv = TrinetDiagnostics.begin("record.stop")
+        defer { iv.end() }
         tickerTask?.cancel(); tickerTask = nil
         let wasRecording = isRecording
-        session?.stopRecording()   // synchronous, returns immediately
-        isRecording = false
+        session?.stopRecording()   // returns immediately; finalizes off-main
+        if isRecording { isRecording = false }
+        // Non-blocking: deactivation runs on the audio queue.
+        if endKeepAlive { BackgroundKeepAlive.shared.stop() }
         if wasRecording { setLed(true) }   // restore the LED now that capture stopped
+    }
+
+    // MARK: - Background / foreground
+
+    /// App went to the background (or the phone locked). While recording, the
+    /// keep-alive keeps the stream and the recording running; otherwise close
+    /// the session cleanly so iOS can suspend the app, and reopen on return.
+    func appDidEnterBackground() async {
+        guard !isRecording, !isThermalPaused, !wasRecordingBeforeThermal, session != nil else { return }
+        let dev = device
+        await closeSession()
+        device = dev
+        closedForBackground = true
+    }
+
+    /// App is active again: reopen the preview session if it was closed for
+    /// the background.
+    func appDidBecomeActive() async {
+        guard closedForBackground else { return }
+        closedForBackground = false
+        guard let dev = device else { return }
+        device = nil
+        await openSession(on: dev)
     }
 
     /// Set all LED channels on/off over the shared device connection, best-effort

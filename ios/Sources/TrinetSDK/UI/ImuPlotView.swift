@@ -16,12 +16,23 @@ public enum ImuAxis {
     public static let labels = ["x", "y", "z"]
 }
 
+/// Rolling IMU window for the live plot.
+///
+/// Samples arrive ~30 times a second (one batch per video frame, ~19 samples
+/// each at 562 Hz) but the published `window` — what the plot redraws from —
+/// changes at most `maxPublishHz` times a second (15 by default), with a
+/// trailing update so the last batch always shows. Before, every single sample
+/// was appended to the @Published arrays: ~1,700 copy-on-write copies of the
+/// 2,000-sample arrays and as many change notifications per second, and up to
+/// 30 full plot redraws a second on the main thread.
 @MainActor
 public final class ImuHistory: ObservableObject {
+    public typealias Point = (t: Double, x: Float, y: Float, z: Float)
+
     public struct Window {
-        public var accel: [(t: Double, x: Float, y: Float, z: Float)] = []
-        public var gyro:  [(t: Double, x: Float, y: Float, z: Float)] = []
-        public var mag:   [(t: Double, x: Float, y: Float, z: Float)] = []
+        public var accel: [Point] = []
+        public var gyro:  [Point] = []
+        public var mag:   [Point] = []
         public var temp: Float = 0
     }
 
@@ -36,51 +47,115 @@ public final class ImuHistory: ObservableObject {
     @Published public private(set) var hasMag: Bool = false
 
     public let durationSeconds: Double
+    /// Upper bound on how often `window` (and the counters) are republished.
+    public let maxPublishHz: Double
     private let capacity: Int          // rolling-window size for the plot
     private var t0Ns: UInt64? = nil    // stable across the whole session
     private var lastBatchTs: UInt64? = nil
 
-    public init(durationSeconds: Double = 4.0, sampleRateHz: Int = 562) {
+    // Unpublished working state; snapshotted into `window` on publish.
+    private var accel: [Point] = []
+    private var gyro:  [Point] = []
+    private var mag:   [Point] = []
+    private var temp: Float = 0
+    private var pendingTotal = 0
+    private var pendingRate: Double = 0
+    private var pendingHasMag = false
+    private var lastPublish: TimeInterval = -.infinity
+    private var trailingScheduled = false
+    private var generation = 0
+    /// Number of times the window was published (tests / diagnostics).
+    private(set) var publishCount = 0
+
+    public init(durationSeconds: Double = 4.0, sampleRateHz: Int = 562,
+                maxPublishHz: Double = 15) {
         self.durationSeconds = durationSeconds
-        self.capacity = Int(durationSeconds * Double(sampleRateHz))
+        self.capacity = max(1, Int(durationSeconds * Double(sampleRateHz)))
+        self.maxPublishHz = max(1, maxPublishHz)
+        let room = self.capacity * 2 + 256
+        accel.reserveCapacity(room); gyro.reserveCapacity(room); mag.reserveCapacity(room)
     }
 
     public func append(_ samples: [ImuSample]) {
+        append(samples, now: ProcessInfo.processInfo.systemUptime)
+    }
+
+    /// `now` is injectable for tests (seconds, monotonic).
+    func append(_ samples: [ImuSample], now: TimeInterval) {
         guard !samples.isEmpty else { return }
         if t0Ns == nil { t0Ns = samples.first!.timestampNs }
         let t0 = Double(t0Ns!) * 1e-9
         for s in samples {
             let t = Double(s.timestampNs) * 1e-9 - t0
-            window.accel.append((t, s.accel.x, s.accel.y, s.accel.z))
-            window.gyro .append((t, s.gyro.x,  s.gyro.y,  s.gyro.z))
-            window.mag  .append((t, s.mag.x,   s.mag.y,   s.mag.z))
-            if !hasMag, s.mag != .zero { hasMag = true }
+            accel.append((t, s.accel.x, s.accel.y, s.accel.z))
+            gyro .append((t, s.gyro.x,  s.gyro.y,  s.gyro.z))
+            mag  .append((t, s.mag.x,   s.mag.y,   s.mag.z))
+            if !pendingHasMag, s.mag != .zero { pendingHasMag = true }
         }
-        window.temp = samples.last!.tempC
+        temp = samples.last!.tempC
 
         // Running total (not capped — this is the number users want to see
         // climb, vs the rolling-window count which plateaus at capacity).
-        totalReceived += samples.count
+        pendingTotal += samples.count
 
         // Live rate from the span of this batch.
         if let prev = lastBatchTs {
             let dt = Double(samples.last!.timestampNs &- prev) * 1e-9
-            if dt > 0 { rateHz = Double(samples.count) / dt }
+            if dt > 0 { pendingRate = Double(samples.count) / dt }
         }
         lastBatchTs = samples.last!.timestampNs
 
-        if window.accel.count > capacity {
-            window.accel.removeFirst(window.accel.count - capacity)
+        // Trim lazily (amortized O(1) per sample): let the buffers grow to
+        // twice the window, then drop the oldest back to one window.
+        if accel.count > capacity * 2 {
+            let excess = accel.count - capacity
+            accel.removeFirst(excess); gyro.removeFirst(excess); mag.removeFirst(excess)
         }
-        if window.gyro.count > capacity {
-            window.gyro.removeFirst(window.gyro.count - capacity)
-        }
-        if window.mag.count > capacity {
-            window.mag.removeFirst(window.mag.count - capacity)
+
+        let interval = 1 / maxPublishHz
+        if now - lastPublish >= interval {
+            publish(now: now)
+        } else if !trailingScheduled {
+            // Make sure the latest samples show even if the stream pauses.
+            trailingScheduled = true
+            let gen = generation
+            let delay = max(0, interval - (now - lastPublish))
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1e9))
+                guard let self, self.generation == gen, self.trailingScheduled else { return }
+                self.publish(now: ProcessInfo.processInfo.systemUptime)
+            }
         }
     }
 
+    /// Publish whatever has been received so far, now.
+    public func flush() {
+        publish(now: ProcessInfo.processInfo.systemUptime)
+    }
+
+    private func publish(now: TimeInterval) {
+        trailingScheduled = false
+        lastPublish = now
+        publishCount += 1
+        // One snapshot assignment → one change notification for the window.
+        window = Window(accel: Array(accel.suffix(capacity)),
+                        gyro: Array(gyro.suffix(capacity)),
+                        mag: Array(mag.suffix(capacity)),
+                        temp: temp)
+        if totalReceived != pendingTotal { totalReceived = pendingTotal }
+        if rateHz != pendingRate { rateHz = pendingRate }
+        if hasMag != pendingHasMag { hasMag = pendingHasMag }
+    }
+
     public func reset() {
+        generation += 1
+        trailingScheduled = false
+        accel.removeAll(keepingCapacity: true)
+        gyro.removeAll(keepingCapacity: true)
+        mag.removeAll(keepingCapacity: true)
+        temp = 0
+        pendingTotal = 0; pendingRate = 0; pendingHasMag = false
+        lastPublish = -.infinity
         window = Window()
         totalReceived = 0
         rateHz = 0

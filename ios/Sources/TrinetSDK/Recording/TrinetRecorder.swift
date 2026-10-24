@@ -29,8 +29,15 @@ final class RecordSink: @unchecked Sendable {
     private var imu: ImuFileWriter?
     private var frameNumber: UInt32 = 0
     private var sawKeyframe: Bool = false
-    private var bytes: Int = 0
     let codec: VideoCodec
+
+    // Byte counter behind its OWN lock. The UI polls it a few times a second
+    // from the main thread; reading it under `lock` made the main thread wait
+    // for whatever the video thread was doing under that lock — an MP4 append,
+    // a sidecar write, or AVAssetWriter.startWriting() on the first keyframe
+    // (tens to hundreds of ms). `statsLock` is only ever held for an add/read.
+    private let statsLock = NSLock()
+    private var bytes: Int = 0
 
     init(codec: VideoCodec,
          config: DeviceConfig,
@@ -80,9 +87,9 @@ final class RecordSink: @unchecked Sendable {
                                       startedAtHostNs: SyncCoordinator.monotonicNs())
     }
 
+    /// Bytes muxed so far. Never waits on the recording path.
     var bytesWritten: Int {
-        lock.lock(); defer { lock.unlock() }
-        return bytes
+        statsLock.withLock { bytes }
     }
 
     /// Called synchronously from the video receive queue. `seiPrefix` is the
@@ -93,7 +100,7 @@ final class RecordSink: @unchecked Sendable {
         guard let mp4 else { return }
         let active = (try? mp4.append(nal: nal, seiPrefix: seiPrefix)) ?? false
         guard active else { return }
-        bytes += nal.payload.count + 4
+        statsLock.withLock { bytes += nal.payload.count + 4 }
         guard Self.isVCL(nal) else { return }
         // Mirror Mp4Writer's keyframe gate so .vts frame N == MP4 frame N.
         if !sawKeyframe {
@@ -138,6 +145,8 @@ final class RecordSink: @unchecked Sendable {
         lock.unlock()
 
         Task.detached(priority: .utility) {
+            let iv = TrinetDiagnostics.begin("recorder.finalize")
+            defer { iv.end() }
             if let m { await m.finish() }   // finish() is non-throwing + status-guarded
             try? v?.close()
             try? i?.close()

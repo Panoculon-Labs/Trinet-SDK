@@ -33,6 +33,8 @@ public final class TrinetLiveSession: @unchecked Sendable {
     private var videoStream: VideoStream?
     private var decoder: VideoDecoder?
     private var recordSink: RecordSink?
+    /// Set by stop(); a recording can't be attached to a stopped session.
+    private var stopped = false
 
     // Latest parameter-set NALs seen on the wire (VPS/SPS/PPS). Cached so a
     // recording started mid-stream can prime its Mp4Writer immediately,
@@ -59,6 +61,10 @@ public final class TrinetLiveSession: @unchecked Sendable {
     private let sampleStreamMaker =
         AsyncStream<CMSampleBuffer>.makeStream(bufferingPolicy: .bufferingNewest(3))
     public var sampleStream: AsyncStream<CMSampleBuffer> { sampleStreamMaker.stream }
+    /// These are COMPRESSED frames: dropping one breaks every frame that
+    /// references it (smeared preview until the next keyframe). So after a
+    /// drop, stop feeding the preview until the next keyframe. NAL thread only.
+    private var previewNeedsKeyframe = false
 
     private let imuStreamMaker =
         AsyncStream<ImuBatch>.makeStream(bufferingPolicy: .bufferingNewest(8))
@@ -87,10 +93,13 @@ public final class TrinetLiveSession: @unchecked Sendable {
         let dec = makeDecoder(codec)
         let vs = VideoStream(host: host, codec: codec, interfaceName: device.interfaceName)
 
-        lock.lock()
-        decoder = dec
-        videoStream = vs
-        lock.unlock()
+        let alreadyStopped = lock.withLock { () -> Bool in
+            if stopped { return true }
+            decoder = dec
+            videoStream = vs
+            return false
+        }
+        if alreadyStopped { return }
 
         // Synchronous NAL callback — no await, no actor hop. IMU is parsed out
         // of the SEI here too; there is no separate UDP channel anymore.
@@ -100,13 +109,18 @@ public final class TrinetLiveSession: @unchecked Sendable {
     }
 
     public func stop() async {
-        // Stop any active recording first.
-        stopRecording()
-
-        lock.lock()
-        let vs = videoStream;  videoStream = nil
-        decoder = nil
-        lock.unlock()
+        // Mark stopped and detach any active recording in ONE critical section,
+        // so a startRecording() finishing concurrently can't attach a sink
+        // after we looked.
+        let (vs, sink) = lock.withLock { () -> (VideoStream?, RecordSink?) in
+            stopped = true
+            let vs = videoStream;  videoStream = nil
+            decoder = nil
+            let s = recordSink;    recordSink = nil
+            return (vs, s)
+        }
+        // Finalize off this thread (see stopRecording()).
+        if let sink { Task.detached(priority: .utility) { sink.finish() } }
 
         vs?.stop()
         sampleStreamMaker.continuation.finish()
@@ -116,7 +130,21 @@ public final class TrinetLiveSession: @unchecked Sendable {
 
     private func makeDecoder(_ codec: VideoCodec) -> VideoDecoder {
         VideoDecoder(codec: codec) { [weak self] sb in
-            self?.sampleStreamMaker.continuation.yield(sb)
+            self?.deliverPreview(sb)
+        }
+    }
+
+    /// Hand one compressed frame to the preview stream. Runs on the NAL thread
+    /// (the decoder emits synchronously from onNAL).
+    private func deliverPreview(_ sb: CMSampleBuffer) {
+        if previewNeedsKeyframe {
+            guard sb.trinetIsKeyframe else { return }
+            previewNeedsKeyframe = false
+        }
+        if case .dropped = sampleStreamMaker.continuation.yield(sb) {
+            // The consumer fell behind and the oldest buffered frame was
+            // discarded; resync on the next keyframe rather than smear.
+            previewNeedsKeyframe = true
         }
     }
 
@@ -249,24 +277,44 @@ public final class TrinetLiveSession: @unchecked Sendable {
     /// Start recording the live stream. Stereo cameras record the full
     /// side-by-side canvas (both eyes) regardless of the preview's lens
     /// selection — showing one eye is display-only.
+    ///
+    /// Runs off the caller's actor (this is a nonisolated async method): the
+    /// file creation and AVAssetWriter setup never touch the main thread.
+    /// Throws `CancellationError` if the session was stopped meanwhile.
     @discardableResult
     public func startRecording(in directory: URL,
                                baseName: String? = nil) async throws -> RecordingHandle {
+        let iv = TrinetDiagnostics.begin("session.startRecording")
+        defer { iv.end() }
         let cfg    = await device.currentConfig
         let devId  = await device.deviceIdBytes
         let offset = await device.lastHostOffsetNs ?? 0
         let info   = await device.info
         let params = snapshotParamSets()   // prime the writer immediately
-        let sink = try RecordSink(codec: self.codec, config: cfg,
-                                  deviceId: devId, iosOffsetNs: offset,
-                                  paramSets: params,
-                                  in: directory, baseName: baseName,
-                                  canvasWidth: info?.canvasWidth,
-                                  canvasHeight: info?.canvasHeight,
-                                  imuRateHz: info?.nominalImuRateHz ?? 562)
-        lock.lock()
-        recordSink = sink
-        lock.unlock()
+        let codec  = self.codec
+        let sink = try TrinetDiagnostics.measure("recorder.create") {
+            try RecordSink(codec: codec, config: cfg,
+                           deviceId: devId, iosOffsetNs: offset,
+                           paramSets: params,
+                           in: directory, baseName: baseName,
+                           canvasWidth: info?.canvasWidth,
+                           canvasHeight: info?.canvasHeight,
+                           imuRateHz: info?.nominalImuRateHz ?? 562)
+        }
+        // Install it — unless stop() ran while we were setting up, or another
+        // recording was started meanwhile; a sink nobody finishes would leave an
+        // unfinalized MP4 behind.
+        let (installed, replaced) = lock.withLock { () -> (Bool, RecordSink?) in
+            if stopped { return (false, nil) }
+            let old = recordSink
+            recordSink = sink
+            return (true, old)
+        }
+        if let replaced { Task.detached(priority: .utility) { replaced.finish() } }
+        guard installed else {
+            sink.finish()
+            throw CancellationError()
+        }
         return sink.handle
     }
 
@@ -306,7 +354,9 @@ extension TrinetDevice {
     /// (firmware without that endpoint streams H.264), then confirmed against
     /// the stream's Content-Type once it opens.
     public func liveSession() async -> TrinetLiveSession {
+        let iv = TrinetDiagnostics.begin("device.streamCodec")
         let codec = (try? await streamCodec()) ?? .h264
+        iv.end()
         noteStreamCodec(codec)
         return TrinetLiveSession(device: self, codec: codec)
     }

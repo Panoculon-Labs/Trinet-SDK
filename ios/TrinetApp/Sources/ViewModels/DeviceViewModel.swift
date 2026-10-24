@@ -24,8 +24,6 @@ final class DeviceViewModel: ObservableObject {
     @Published var devices: [TrinetDevice] = []
     @Published var selected: TrinetDevice?
     @Published var deviceId: String = ""
-    @Published var storageTotal: UInt64? = nil
-    @Published var storageFree: UInt64? = nil
     @Published var isScanning: Bool = false
     @Published var lastError: String?
     /// Model / firmware / stream shape of the selected camera (nil until connected).
@@ -106,16 +104,9 @@ final class DeviceViewModel: ObservableObject {
     }
 
     func refreshInfo(for dev: TrinetDevice) async {
-        do {
-            // info first: views key off deviceId changes and read info then.
-            self.info = await dev.info
-            self.deviceId = await dev.deviceId
-            await refreshStreamCodec()
-            let st = try await dev.storage()
-            self.storageTotal = st.total_bytes
-            self.storageFree  = st.available_bytes
-        } catch {
-            lastError = friendlyTrinetError(error)
-        }
+        // info first: views key off deviceId changes and read info then.
+        self.info = await dev.info
+        self.deviceId = await dev.deviceId
+        await refreshStreamCodec()
     }
 }

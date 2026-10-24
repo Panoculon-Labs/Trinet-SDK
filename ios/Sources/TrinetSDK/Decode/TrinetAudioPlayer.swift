@@ -30,12 +30,14 @@ public final class TrinetAudioPlayer: @unchecked Sendable {
         renderer.requestMediaDataWhenReady(on: queue) { [weak self] in self?.pump() }
     }
 
-    /// Configure the audio session and begin playback. Idempotent.
+    /// Configure the audio session and begin playback. Idempotent. Returns
+    /// immediately: the (blocking) session calls run on TrinetAudioSession.queue.
     public func start() {
         #if os(iOS)
-        let session = AVAudioSession.sharedInstance()
-        try? session.setCategory(.playback, mode: .moviePlayback, options: [.mixWithOthers])
-        try? session.setActive(true)
+        TrinetAudioSession.perform("audioplayer.activate") { session in
+            try? session.setCategory(.playback, mode: .moviePlayback, options: [.mixWithOthers])
+            try? session.setActive(true)
+        }
         #endif
     }
 
@@ -85,7 +87,9 @@ public final class TrinetAudioPlayer: @unchecked Sendable {
             self.started = false
             self.format = nil
             #if os(iOS)
-            try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+            TrinetAudioSession.perform("audioplayer.deactivate") { session in
+                try? session.setActive(false, options: [.notifyOthersOnDeactivation])
+            }
             #endif
         }
     }

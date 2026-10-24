@@ -41,11 +41,20 @@ public final class VideoStream: @unchecked Sendable {
     public let connectRetryWindow: TimeInterval
 
     private let lock = NSLock()
+    /// Every NWConnection callback (state + receive) and ALL parsing state
+    /// (`splitter`, `headerBuffer`, `headerDone`) live on this one serial
+    /// queue. stop() and the retry path reset that state ON this queue, so a
+    /// chunk is never parsed while the splitter is being replaced. (Callbacks
+    /// used to run on a global concurrent queue while stop() swapped the
+    /// splitter from the main thread — a data race that trapped inside
+    /// Data.removeSubrange when switching screens.)
+    private let ioQueue = DispatchQueue(label: "com.panoculon.trinet.videostream",
+                                        qos: .userInitiated)
     private var connection: NWConnection?
     private var onNAL: NALCallback?
-    private var splitter = AnnexBSplitter()
-    private var headerDone = false
-    private var headerBuffer = Data()
+    private var splitter = AnnexBSplitter()     // ioQueue only
+    private var headerDone = false              // written on ioQueue; read under lock
+    private var headerBuffer = Data()           // ioQueue only
     private var stopped = false
     private var receiveStarted = false
     private var retryDeadline = Date.distantPast
@@ -97,7 +106,7 @@ public final class VideoStream: @unchecked Sendable {
                 guard let self, let conn else { return }
                 self.onState(state, conn)
             }
-            conn.start(queue: .global(qos: .userInitiated))
+            conn.start(queue: self.ioQueue)
         }
     }
 
@@ -108,11 +117,17 @@ public final class VideoStream: @unchecked Sendable {
         let conn = connection
         connection = nil
         onNAL = nil
-        splitter = AnnexBSplitter()
-        headerBuffer.removeAll()
-        headerDone = false
         lock.unlock()
         conn?.cancel()
+        // Parsing state belongs to ioQueue: reset it there, after any chunk
+        // already being parsed has finished (later ones see `connection` nil
+        // and are dropped).
+        ioQueue.async { [weak self] in
+            guard let self else { return }
+            self.splitter = AnnexBSplitter()
+            self.headerBuffer.removeAll()
+            self.lock.lock(); self.headerDone = false; self.lock.unlock()
+        }
     }
 
     // MARK: - Connection lifecycle
@@ -138,16 +153,18 @@ public final class VideoStream: @unchecked Sendable {
     }
 
     /// If `conn` is the current connection and the stream never got going,
-    /// tear it down and try again in 1 s — until `retryDeadline`.
+    /// tear it down and try again in 1 s — until `retryDeadline`. Runs on
+    /// ioQueue (connection state handler / receive completion).
     private func retryIfStillConnecting(_ conn: NWConnection) {
+        dispatchPrecondition(condition: .onQueue(ioQueue))
         lock.lock()
         guard conn === connection, !stopped, !headerDone else { lock.unlock(); return }
         connection = nil
         receiveStarted = false
-        headerBuffer.removeAll()
-        splitter = AnnexBSplitter()
         let retry = Date() < retryDeadline
         lock.unlock()
+        headerBuffer.removeAll()
+        splitter = AnnexBSplitter()
         conn.cancel()
         guard retry else {
             NSLog("TrinetSDK VideoStream: :\(port) unreachable — giving up")
@@ -229,7 +246,9 @@ public final class VideoStream: @unchecked Sendable {
     }
 
     /// Returns false if the response was not a 200 (caller retries).
+    /// Runs on ioQueue only.
     private func consume(_ chunk: Data) -> Bool {
+        dispatchPrecondition(condition: .onQueue(ioQueue))
         // Strip HTTP headers on the first chunk(s).
         var body: Data
         lock.lock()
@@ -312,19 +331,24 @@ struct AnnexBSplitter {
         }
         guard !starts.isEmpty else { return }
 
+        // Offsets above are 0-based (from withUnsafeBytes); Data's indices
+        // start at `startIndex`, which need not be 0 — always offset from it.
+        let base = buf.startIndex
+
         // Emit each NAL between consecutive start codes.
         for k in 0..<(starts.count - 1) {
             let nalStart = starts[k].idx + starts[k].len
             let nalEnd   = starts[k + 1].idx
             if nalEnd > nalStart {
-                emit(buf.subdata(in: nalStart..<nalEnd))
+                emit(buf.subdata(in: (base + nalStart)..<(base + nalEnd)))
             }
         }
 
-        // Retain the tail from the last (incomplete) start code onward.
+        // Retain the tail from the last (incomplete) start code onward, as a
+        // fresh 0-based buffer.
         let lastIdx = starts[starts.count - 1].idx
         if lastIdx > 0 {
-            buf.removeSubrange(0..<lastIdx)
+            buf = buf.subdata(in: (base + lastIdx)..<buf.endIndex)
         }
         // Safety cap: a NAL should never exceed a few MB. If the tail grows
         // pathologically (no start code for ages), drop it to avoid OOM.

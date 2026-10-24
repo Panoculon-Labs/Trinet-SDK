@@ -66,6 +66,9 @@ All are `GET` (read) + `POST` (set) with a JSON body. Older firmware answers
 | `/api/imu/stream` | `{"enabled":0\|1}` | In-stream IMU on/off. |
 | `/api/calibration/lock` | `{"locked":0\|1}` | Refuses calibration uploads while locked. |
 | `/api/led` (GET) | `{"r","g","b"}` | Last colour set. |
+| `/api/recording/chunk` | `{"minutes":0–240}` | Split the camera's card recordings into parts (`0` = one file). Applies to the next recording, no restart. |
+| `/api/video/flip` | `{"value":0\|1}` | Rotate the picture 180° (upside-down mount). The camera restarts to apply; kept across a settings reset. |
+| `/api/audio/format` | `{"format":"aac"\|"pcm"}` | Card recordings: `pcm` also writes a `.wav` beside each MP4 (the MP4 keeps its AAC track). The camera restarts to apply. |
 | `/api/thermal/limit` | `{"celsius":75–100}` (`0` = default) | Applies to the next recording. |
 | `/api/ble` | `{"enabled":0\|1}` | Bluetooth LE status broadcast; applied from the next boot. |
 | `POST /api/settings/reset` | — | Clears every host-set setting; the camera reboots. |

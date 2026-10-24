@@ -413,6 +413,42 @@ public actor TrinetDevice {
         try await api.setBle(enabled)
     }
 
+    // MARK: - Card recording + mounting (0.3.2)
+
+    /// How the camera splits its card recordings (`minutes` 0 = one file).
+    public func recordingChunk() async throws -> DeviceAPI.RecordingChunkResponse {
+        try await api.recordingChunk()
+    }
+
+    /// Split card recordings every `minutes` (0 = one continuous file). Applies
+    /// to the next recording, no restart.
+    public func setRecordingChunk(minutes: Int) async throws {
+        try await api.setRecordingChunk(minutes: minutes)
+    }
+
+    /// Whether the picture is rotated 180 degrees (upside-down mount).
+    public func imageFlip() async throws -> DeviceAPI.ImageFlipResponse {
+        try await api.imageFlip()
+    }
+
+    /// Rotate the picture 180 degrees. Persisted; the camera restarts its
+    /// imaging pipeline to apply, so the stream drops and must be reopened.
+    public func setImageFlip(_ on: Bool) async throws {
+        try await api.setImageFlip(on)
+    }
+
+    /// Card recording audio format ("aac" | "pcm").
+    public func recordingAudioFormat() async throws -> DeviceAPI.AudioFormatResponse {
+        try await api.recordingAudioFormat()
+    }
+
+    /// Set the card recording audio format ("aac" | "pcm"). Card recordings
+    /// only — the live stream's audio is always AAC. Persisted; the camera
+    /// restarts to apply.
+    public func setRecordingAudioFormat(_ format: String) async throws {
+        try await api.setRecordingAudioFormat(format)
+    }
+
     // MARK: - Helpers
 
     private static func hex16(_ hex: String) -> Data {

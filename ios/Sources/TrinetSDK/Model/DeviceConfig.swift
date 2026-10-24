@@ -11,6 +11,31 @@ public enum VideoCodec: String, Sendable, Codable, CaseIterable, Identifiable {
     public var displayName: String { self == .h265 ? "H.265 (HEVC)" : "H.264 (AVC)" }
 }
 
+/// What audio the camera writes alongside the recordings on its own card.
+///
+/// `.aac` (the default) gives one MP4 with an AAC track, which plays
+/// everywhere. `.pcm` is **additive**: the MP4 keeps exactly the same AAC
+/// track and the camera writes the original uncompressed samples next to it as
+/// a `.wav`, sample-aligned so it drops into the MP4's audio with no offset.
+///
+/// It is additive rather than a swap because raw PCM cannot go in an MP4 — the
+/// format has no object type for it, and the QuickTime `sowt` entry some
+/// muxers smuggle into MP4-branded files is out of spec and not decoded by
+/// several mainstream players. A `.wav` reads everywhere instead, and keeping
+/// AAC in the container means nothing else in a pipeline has to change.
+///
+/// The cost is card bandwidth: about twelve times AAC's audio bitrate, and on
+/// a stereo camera the AAC track goes into both eyes' files. Reach for it when
+/// you want the original samples, not as a general quality setting.
+///
+/// Card recordings only — the audio inside the live stream is always AAC.
+public enum AudioFormat: String, Sendable, Codable, CaseIterable, Identifiable {
+    case aac
+    case pcm
+    public var id: String { rawValue }
+    public var displayName: String { self == .pcm ? "AAC + uncompressed .wav" : "AAC" }
+}
+
 public enum VideoResolution: String, Sendable, Codable, CaseIterable, Identifiable {
     case res1080p = "1920x1080"
     case res720p  = "1280x720"

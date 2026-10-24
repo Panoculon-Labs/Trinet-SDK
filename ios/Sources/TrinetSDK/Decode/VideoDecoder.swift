@@ -126,11 +126,11 @@ public final class VideoDecoder {
         let bytes = UnsafeMutablePointer<UInt8>.allocate(capacity: totalLen)
         var len = UInt32(nal.count).bigEndian
         withUnsafeBytes(of: &len) { src in
-            bytes.assign(from: src.bindMemory(to: UInt8.self).baseAddress!, count: 4)
+            bytes.update(from: src.bindMemory(to: UInt8.self).baseAddress!, count: 4)
         }
         nal.withUnsafeBytes { src in
             if let base = src.bindMemory(to: UInt8.self).baseAddress {
-                (bytes + 4).assign(from: base, count: nal.count)
+                (bytes + 4).update(from: base, count: nal.count)
             }
         }
 
@@ -184,6 +184,22 @@ public final class VideoDecoder {
         }
 
         onSampleBuffer(sample)
+    }
+}
+
+extension CMSampleBuffer {
+    /// True unless the sample carries the NotSync attachment (VideoDecoder marks
+    /// every non-key frame). Plain CF lookups, cheap enough for the per-frame
+    /// path — no bridging of the attachments array to Swift collections.
+    var trinetIsKeyframe: Bool {
+        guard let atts = CMSampleBufferGetSampleAttachmentsArray(self, createIfNecessary: false),
+              CFArrayGetCount(atts) > 0,
+              let raw = CFArrayGetValueAtIndex(atts, 0) else { return true }
+        let dict = unsafeBitCast(raw, to: CFDictionary.self)
+        guard let v = CFDictionaryGetValue(
+                dict, Unmanaged.passUnretained(kCMSampleAttachmentKey_NotSync).toOpaque())
+        else { return true }
+        return !CFBooleanGetValue(unsafeBitCast(v, to: CFBoolean.self))
     }
 }
 

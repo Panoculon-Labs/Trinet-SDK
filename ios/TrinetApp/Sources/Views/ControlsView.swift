@@ -40,11 +40,18 @@ struct ControlsView: View {
                     exposureSection
                     if deviceVM.info?.isGlobalShutter == true { noiseReductionSection }
                 }
+                // Split again rather than extended: a ViewBuilder block takes at
+                // most 10 children, and the three new sections took this one to 13.
                 Group {
                     codecSection
+                    recordingSplitSection
+                    recordingAudioFormatSection
+                    imageFlipSection
                     rateControlSection
                     bitrateSection
                     gopSection
+                }
+                Group {
                     streamSection
                     audioRateSection
                     thermalSection
@@ -89,6 +96,65 @@ struct ControlsView: View {
 
     /// Live-stream codec (to this iPhone) and the camera's own card-recording
     /// codec. Each row is hidden on firmware that doesn't offer the setting.
+    @ViewBuilder
+    private var recordingSplitSection: some View {
+        if let current = vm.recordingChunkMinutes {
+            Section {
+                Picker("Split every", selection: Binding(
+                    get: { current },
+                    set: { m in if m != current { vm.setRecordingChunk(minutes: m) } })) {
+                    Text("Off").tag(0)
+                    Text("5 min").tag(5)
+                    Text("10 min").tag(10)
+                    Text("15 min").tag(15)
+                    Text("30 min").tag(30)
+                    Text("60 min").tag(60)
+                }
+            } header: {
+                Text("Split recordings")
+            } footer: {
+                Text("Long recordings on the camera's memory card can be written as a series of parts instead of one file, which keeps each one a manageable size and means a power loss costs you the last part rather than the whole take. Parts are numbered inside a folder named after the recording, and each one plays on its own. Applies to the camera's next recording — no restart, and a recording already running is not affected.")
+            }
+            .disabled(!enabled)
+        }
+    }
+
+    @ViewBuilder
+    private var recordingAudioFormatSection: some View {
+        if let current = vm.recordingAudioFormat {
+            Section {
+                Picker("Card recording audio", selection: Binding(
+                    get: { current },
+                    set: { f in if f != current { vm.setRecordingAudioFormat(f) } })) {
+                    ForEach(AudioFormat.allCases) { f in
+                        Text(f.displayName).tag(f)
+                    }
+                }
+            } header: {
+                Text("Recording audio format")
+            } footer: {
+                Text("Applies to the camera's own card recordings; the audio in this preview is always AAC. Choosing the uncompressed option does not replace the AAC track — the MP4 is unchanged and the original samples are written next to it as a .wav, lined up with the video so it drops straight in. Costs about twelve times the audio bitrate on the card. The camera restarts to apply.")
+            }
+            .disabled(!enabled)
+        }
+    }
+
+    @ViewBuilder
+    private var imageFlipSection: some View {
+        if let on = vm.imageFlip {
+            Section {
+                Toggle("Rotate picture 180°", isOn: Binding(
+                    get: { on },
+                    set: { v in if v != on { vm.setImageFlip(v) } }))
+            } header: {
+                Text("Orientation")
+            } footer: {
+                Text("For wearing the camera upside-down — a cap mount, for instance. With this on, an inverted camera records and previews upright. On a stereo camera the two eyes swap with it, and the calibration the camera reports is rotated to match, so recordings stay usable without recalibrating. The camera restarts to apply, and this setting is kept when you restore defaults — it describes how the camera is mounted, not a picture preference.")
+            }
+            .disabled(!enabled)
+        }
+    }
+
     @ViewBuilder
     private var codecSection: some View {
         if deviceVM.streamCodecSupported || vm.recordingCodec != nil {

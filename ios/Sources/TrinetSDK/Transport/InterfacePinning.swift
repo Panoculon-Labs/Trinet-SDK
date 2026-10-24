@@ -19,6 +19,7 @@
 // in the path), we return plain parameters and let the system route. That can
 // never sever a working path — worst case it behaves like the unpinned code.
 
+import Foundation
 import Network
 
 enum InterfacePinning {
@@ -26,6 +27,10 @@ enum InterfacePinning {
     /// (e.g. "en5"). Blocks briefly on an NWPathMonitor update; returns nil
     /// if not present.
     static func interface(named name: String) -> NWInterface? {
+        // Blocks up to 0.5 s: must never run on the main thread.
+        assert(!Thread.isMainThread, "InterfacePinning blocks; call it off the main thread")
+        let iv = TrinetDiagnostics.begin("net.pinInterface")
+        defer { iv.end() }
         let monitor = NWPathMonitor()
         let sem = DispatchSemaphore(value: 0)
         var found: NWInterface?

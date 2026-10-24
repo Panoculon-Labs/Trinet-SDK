@@ -6,6 +6,7 @@ import TrinetSDK
 struct RecordView: View {
     @EnvironmentObject var device: DeviceViewModel
     @StateObject private var vm = RecordViewModel()
+    @Environment(\.scenePhase) private var scenePhase
     /// Stereo preview lens (display-only; recordings always keep both eyes).
     @AppStorage("trinet.preview.lens") private var lensRaw: String = StereoLens.left.rawValue
 
@@ -55,6 +56,16 @@ struct RecordView: View {
             }
             .onDisappear {
                 Task { await vm.closeSession() }
+            }
+            .onChange(of: scenePhase) { _, phase in
+                // While recording the app stays alive in the background (the
+                // recording keeps going); otherwise the stream is closed and
+                // reopened when the app comes back.
+                switch phase {
+                case .background: Task { await vm.appDidEnterBackground() }
+                case .active:     Task { await vm.appDidBecomeActive() }
+                default:          break
+                }
             }
         }
     }

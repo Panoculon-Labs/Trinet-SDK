@@ -28,7 +28,7 @@ you depend on the repo directly:
 ```swift
 // Consumer Package.swift
 dependencies: [
-    .package(url: "https://github.com/Panoculon-Labs/Trinet-SDK", from: "0.3.1"),
+    .package(url: "https://github.com/Panoculon-Labs/Trinet-SDK", from: "0.3.5"),
 ],
 targets: [
     .target(name: "MyApp", dependencies: [
@@ -38,7 +38,7 @@ targets: [
 ```
 
 In Xcode: **File → Add Package Dependencies…** → enter the repo URL → **Up to
-Next Major `0.3.1`** → add the **TrinetSDK** product.
+Next Major `0.3.5`** → add the **TrinetSDK** product.
 
 `import TrinetSDK` and you're set.
 
@@ -121,6 +121,44 @@ await device.disconnect()
 A complete reference integration is the [`TrinetApp/`](TrinetApp/) demo.
 
 ---
+
+## Background recording
+
+A phone-side recording keeps running when the app goes to the background or
+the phone locks, as on Android. iOS normally suspends a backgrounded app within
+seconds, which would drop the camera's stream. So while a recording runs, the
+app keeps an inaudible audio session playing: `BackgroundKeepAlive.shared
+.start()` / `stop()`, with `UIBackgroundModes: audio` declared in the app.
+
+- **Preview:** it pauses in the background, because iOS allows no video
+  decoding there, and resumes at the next keyframe on return.
+- **Not recording:** the demo app closes the stream in the background and
+  reopens it when the app returns.
+
+Silent background audio can be questioned in App Store review. TestFlight,
+ad-hoc and enterprise builds are unaffected.
+
+## Main thread and diagnostics
+
+Nothing the SDK does on the caller's thread blocks:
+- **Audio:** `BackgroundKeepAlive` `start()` / `stop()` return at once. The
+  audio-session and audio-engine work runs on `TrinetAudioSession.queue`. Use
+  it for your own `AVAudioSession` calls too:
+  `TrinetAudioSession.perform { session in … }`.
+- **Preview and plot:** the live preview feeds its display layer from a
+  background thread, and `ImuHistory` republishes the plot window at most 15
+  times a second.
+
+To find the cause of a freeze:
+- **Signposts:** `TrinetDiagnostics` signposts the slow operations: session
+  open and close, record start and stop, recorder create and finalize,
+  audio-session activation, interface pinning, and share-sheet presentation.
+  They show under Points of Interest in Instruments.
+- **Logs:** any of those operations taking 100 ms or more is also logged
+  (subsystem `com.panoculon.trinet`, category `perf`).
+- **Stall detector:** `MainThreadStallDetector.shared.start()` (the demo app
+  calls it in DEBUG builds) logs every main-thread stall of 250 ms or more and
+  names the operations that were running.
 
 ## Architecture
 
@@ -219,6 +257,11 @@ func streamCodec() async throws -> VideoCodec              // live stream to the
 func setStreamCodec(_ codec: VideoCodec) async throws      // camera restarts its stream
 func recordingCodec() async throws -> VideoCodec           // camera's SD recordings
 func setRecordingCodec(_ codec: VideoCodec) async throws
+
+// Card recording + mounting (0.3.2) — camera firmware 0.5.12 or newer
+func setRecordingChunk(minutes:)          // split card recordings (0 = one file)
+func setImageFlip(_:)                     // rotate the picture 180°; camera restarts
+func setRecordingAudioFormat(_:)          // "aac" | "pcm" (.wav sidecar beside the MP4)
 
 // Camera controls (0.3) — each has a matching getter
 func setBrightness(_:), setContrast(_:), setSaturation(_:), setSharpness(_:), setHue(_:)
@@ -424,7 +467,7 @@ one-line config file on the camera's SD card.
 
 ## Versioning
 
-`TrinetSDK.version` — currently **`0.3.1`**, tracking the git tag. Bump on
+`TrinetSDK.version` — currently **`0.3.5`**, tracking the git tag. Bump on
 on-disk-format changes, wire-protocol changes, or non-additive API changes. The
 Android SDK is versioned independently; both share the same on-disk and
 wire formats. Release notes are published under [**Releases**](../../releases).

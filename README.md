@@ -356,7 +356,7 @@ Swift Package Manager (zero external dependencies). On iOS the camera connects a
 ```swift
 // Consumer Package.swift
 dependencies: [
-    .package(url: "https://github.com/Panoculon-Labs/Trinet-SDK", from: "0.2.1"),
+    .package(url: "https://github.com/Panoculon-Labs/Trinet-SDK", from: "0.3.5"),
 ],
 targets: [
     .target(name: "MyApp", dependencies: [
@@ -367,6 +367,13 @@ targets: [
 
 In Xcode: **File → Add Package Dependencies…** → the repo URL → add the **TrinetSDK**
 product. (`Package.swift` is at the repo root because SwiftPM requires it there.)
+
+It supports Pro Mono, Pro Stereo and Pro Stereo GS:
+- **Video:** live preview in H.264 or H.265, with a lens picker on stereo
+  cameras.
+- **Phone recordings:** recordings with audio, which keep running in the
+  background and with the phone locked.
+- **Camera controls:** the full set.
 
 Full iOS guide — API, file formats, wire spec, and a **clone → Xcode → iPhone**
 quickstart for the demo app — is in [**ios/README.md**](ios/README.md). iOS wire

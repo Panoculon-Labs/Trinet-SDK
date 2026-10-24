@@ -124,6 +124,10 @@ bug report can say which path it was on.
   device Start-of-Frame timestamp on the same clock as the frames. (A `:5557`
   UDP host-offset probe exists for a future multi-camera case, but is not used
   for normal sync.)
+- iOS suspends a backgrounded app, which would drop these sockets. While a
+  phone-side recording runs, the SDK keeps the app alive with an inaudible
+  background audio session (`BackgroundKeepAlive`), so the recording continues
+  when the app is backgrounded or the phone locks.
 - No native code: the whole SDK is Swift over Network.framework / AVFoundation /
   VideoToolbox.
 

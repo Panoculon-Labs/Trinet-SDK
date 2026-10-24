@@ -338,7 +338,10 @@ public final class Mp4Writer {
             if writer.canAdd(ainp) { writer.add(ainp); self.audioInput = ainp }
         }
 
-        guard writer.startWriting() else {
+        // Runs on the video thread under the recorder's locks; can take tens
+        // to hundreds of ms (file + muxer setup). Signposted so a slow start
+        // shows up in the perf log.
+        guard TrinetDiagnostics.measure("mp4.startWriting", { writer.startWriting() }) else {
             if let e = writer.error { throw Mp4WriterError.writerFailed(e) }
             throw Mp4WriterError.sessionStart(-1)
         }

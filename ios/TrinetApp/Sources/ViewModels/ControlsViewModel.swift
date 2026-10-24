@@ -83,6 +83,13 @@ final class ControlsViewModel: ObservableObject {
     /// Codec of the camera's own SD-card recordings; nil = unknown / not
     /// supported by this firmware (picker hidden).
     @Published var recordingCodec: VideoCodec?
+    /// Minutes per card-recording part; 0 = one continuous file. nil = unknown
+    /// or firmware without the control.
+    @Published var recordingChunkMinutes: Int?
+    /// Extra 180-degree rotation for an inverted (cap) mount. nil = unknown.
+    @Published var imageFlip: Bool?
+    /// Card recording audio format. nil = unknown.
+    @Published var recordingAudioFormat: AudioFormat?
 
     /// The currently-selected device; the view keeps this in sync with the
     /// shared DeviceViewModel.
@@ -254,6 +261,11 @@ final class ControlsViewModel: ObservableObject {
             }
             bleOn = try? await device.bleBroadcast()
             recordingCodec = try? await device.recordingCodec()
+            if let c = try? await device.recordingChunk() { recordingChunkMinutes = c.minutes }
+            if let f = try? await device.imageFlip() { imageFlip = f.isOn }
+            if let a = try? await device.recordingAudioFormat() {
+                recordingAudioFormat = AudioFormat(rawValue: a.format)
+            }
             readAwbTuneQuietly()
             if isGS, let v = try? await device.temporalNoiseReduction() { tnrOn = v }
         }
@@ -297,6 +309,59 @@ final class ControlsViewModel: ObservableObject {
     // MARK: Codecs
 
     /// Card (SD) recording codec — persisted on the camera, no restart.
+    /// Split card recordings every `minutes` (0 = one continuous file).
+    /// Applies to the camera's next recording; no restart.
+    func setRecordingChunk(minutes: Int) {
+        let previous = recordingChunkMinutes
+        recordingChunkMinutes = minutes
+        run("recording_chunk") { [self] in
+            do {
+                try await device?.setRecordingChunk(minutes: minutes)
+                message = minutes > 0
+                    ? "Card recordings will be split every \(minutes) min — from the next recording."
+                    : "Card recordings will be one continuous file — from the next recording."
+            } catch {
+                recordingChunkMinutes = previous
+                throw error
+            }
+        }
+    }
+
+    /// Rotate the picture 180 degrees for an inverted mount. The camera
+    /// restarts, so this connection drops and comes back.
+    func setImageFlip(_ on: Bool) {
+        let previous = imageFlip
+        imageFlip = on
+        run("image_flip") { [self] in
+            do {
+                try await device?.setImageFlip(on)
+                message = on
+                    ? "Picture rotated 180° — the camera is restarting."
+                    : "Picture back to normal — the camera is restarting."
+            } catch {
+                imageFlip = previous
+                throw error
+            }
+        }
+    }
+
+    /// Card recording audio format. The camera restarts to apply.
+    func setRecordingAudioFormat(_ format: AudioFormat) {
+        let previous = recordingAudioFormat
+        recordingAudioFormat = format
+        run("recording_audio_format") { [self] in
+            do {
+                try await device?.setRecordingAudioFormat(format.rawValue)
+                message = format == .pcm
+                    ? "Card recordings will also get an uncompressed .wav — the camera is restarting."
+                    : "Card recordings will have AAC audio only — the camera is restarting."
+            } catch {
+                recordingAudioFormat = previous
+                throw error
+            }
+        }
+    }
+
     func setRecordingCodec(_ codec: VideoCodec) {
         let previous = recordingCodec
         recordingCodec = codec

@@ -370,6 +370,37 @@ public actor DeviceAPI {
         public init(codec: String) { self.codec = codec }
     }
     /// GET /api/video/stream_codec and GET /api/video/codec.
+    public struct RecordingChunkCommand: Sendable, Codable {
+        /// Minutes per part, 0...240. 0 = one continuous file.
+        public let minutes: Int
+        public init(minutes: Int) { self.minutes = minutes }
+    }
+
+    public struct RecordingChunkResponse: Sendable, Codable, Equatable {
+        public let minutes: Int
+        /// "host" (set by a client) | "default" (firmware default).
+        public let source: String?
+    }
+
+    public struct ImageFlipCommand: Sendable, Codable {
+        public let flip: Int
+        public init(_ on: Bool) { self.flip = on ? 1 : 0 }
+    }
+
+    public struct ImageFlipResponse: Sendable, Codable, Equatable {
+        public let flip: Int
+        public var isOn: Bool { flip != 0 }
+    }
+
+    public struct AudioFormatCommand: Sendable, Codable {
+        public let format: String   // "aac" | "pcm"
+        public init(format: String) { self.format = format }
+    }
+
+    public struct AudioFormatResponse: Sendable, Codable, Equatable {
+        public let format: String
+    }
+
     public struct CodecResponse: Sendable, Codable, Equatable {
         public let codec: String
         /// "host" (set by a client) | "default" (firmware default).
@@ -407,6 +438,69 @@ public actor DeviceAPI {
     @discardableResult
     public func setRecordingCodec(_ codec: String) async throws -> RecordingCodecSetResponse {
         try await postDecoding("api/video/codec", CodecCommand(codec: codec))
+    }
+
+    /// How card recordings are split — GET /api/recording/chunk. `minutes` is
+    /// 0 for one continuous file.
+    public func recordingChunk() async throws -> RecordingChunkResponse {
+        try await get("api/recording/chunk")
+    }
+
+    /// Split card recordings into parts of `minutes` each — POST
+    /// /api/recording/chunk. 0...240, where 0 means one continuous file (the
+    /// default). Parts are written into a folder named after the recording as
+    /// `partNNN.*` and each one plays on its own, so a power loss costs the
+    /// last part rather than the whole take. Persisted; applies to the
+    /// camera's next recording with NO restart, and a recording already
+    /// running is unaffected. A config file on the memory card still outranks
+    /// it.
+    public func setRecordingChunk(minutes: Int) async throws {
+        try await post("api/recording/chunk", contentType: "application/json",
+                       body: try JSONEncoder().encode(RecordingChunkCommand(minutes: minutes)))
+    }
+
+    /// Whether the picture is rotated 180 degrees — GET /api/video/flip.
+    public func imageFlip() async throws -> ImageFlipResponse {
+        try await get("api/video/flip")
+    }
+
+    /// Rotate the picture 180 degrees — POST /api/video/flip. For a camera
+    /// worn upside-down, a cap mount for instance: this is an EXTRA half-turn
+    /// on top of however the camera is built, so with it on an inverted camera
+    /// records and previews upright.
+    ///
+    /// On a stereo camera the two eyes swap with it (the file that was `_L`
+    /// becomes `_R`, the side-by-side stream swaps halves) and the calibration
+    /// the camera serves from `/api/calibration` is rotated to match, so a
+    /// flipped camera does not have to be recalibrated.
+    ///
+    /// Persisted, and the camera RESTARTS to apply (~15 s, same
+    /// re-enumeration as `setBitrate`) because the rotation is programmed into
+    /// the sensor when the imaging pipeline starts. Kept by a settings reset:
+    /// it describes how the camera is mounted, not a picture preference.
+    public func setImageFlip(_ on: Bool) async throws {
+        try await post("api/video/flip", contentType: "application/json",
+                       body: try JSONEncoder().encode(ImageFlipCommand(on)))
+    }
+
+    /// Card recording audio format — GET /api/audio/format ("aac" | "pcm").
+    public func recordingAudioFormat() async throws -> AudioFormatResponse {
+        try await get("api/audio/format")
+    }
+
+    /// Also write the original uncompressed samples to the card, as a `.wav`
+    /// beside each recording — POST /api/audio/format, "aac" | "pcm".
+    ///
+    /// Additive, not a swap: the MP4 keeps exactly the same AAC track, and the
+    /// `.wav` is sample-aligned to it so it drops in with no offset. Raw PCM
+    /// cannot go inside an MP4 (see `AudioFormat`), which is why it arrives as
+    /// a sidecar. Costs about twelve times AAC's audio bitrate on the card.
+    ///
+    /// Card recordings only — the audio inside the live stream is always AAC.
+    /// Persisted; the camera restarts to apply.
+    public func setRecordingAudioFormat(_ format: String) async throws {
+        try await post("api/audio/format", contentType: "application/json",
+                       body: try JSONEncoder().encode(AudioFormatCommand(format: format)))
     }
 
     /// Enable/disable the in-band IMU SEI stream — POST /api/imu/stream. Live.

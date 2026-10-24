@@ -234,10 +234,10 @@ struct PlayerScreen: View {
                 Button { showInfo = true } label: { Image(systemName: "info.circle") }
                     .accessibilityLabel("Recording info")
                 // The .mp4 self-contains video + IMU (muxed SEI) + frame timing,
-                // so a single file is all you need to share. We pause the player
-                // first (frees the FHD decoder) and present a plain
-                // UIActivityViewController — ShareLink's eager item-provider /
-                // preview probing was what stalled the sheet.
+                // so a single file is all you need to share. Pause the player
+                // first, then present the share sheet with a PROMISED file (see
+                // ShareSheet) so nothing opens or probes the large movie until
+                // an activity is actually chosen.
                 Button {
                     player?.pause(); isPlaying = false
                     ShareSheet.present(url: url, title: title)
@@ -335,11 +335,16 @@ struct PlayerScreen: View {
     }
 
     private func setup() {
+        let iv = TrinetDiagnostics.begin("player.setup")
+        defer { iv.end() }
         // Recordings carry an AAC track; play it even with the ringer switch on
         // silent (the live preview used to set this category; it is silent now).
-        let audioSession = AVAudioSession.sharedInstance()
-        try? audioSession.setCategory(.playback, mode: .moviePlayback)
-        try? audioSession.setActive(true)
+        // These calls block on the audio server (100 ms – 1 s+), so they run on
+        // the SDK's audio-session queue, never on the main thread.
+        TrinetAudioSession.perform("player.audioSession") { session in
+            try? session.setCategory(.playback, mode: .moviePlayback)
+            try? session.setActive(true)
+        }
         let p = AVPlayer(url: url)
         // Load + fuse the IMU track off the main thread; it's a quick parse but
         // a long recording has many samples.
@@ -538,59 +543,82 @@ struct RecordingInfoView: View {
     }
 }
 
-/// Presents a UIActivityViewController for a recording. The file is vended via
-/// a UIActivityItemSource that supplies its own lightweight LPLinkMetadata
-/// (title only, NO image) so the share sheet does NOT QuickLook-preview the
-/// large FHD video — that preview generation was the hang (the `-10814` /
-/// "couldn't be opened" / "default share mode" churn).
+/// Presents the share sheet for a recording.
+///
+/// The recording is handed over as a PROMISED file: an NSItemProvider that
+/// only declares "an MPEG-4 movie named <title>" and produces the file URL when
+/// the chosen activity asks for it. With a plain file-URL item, UIKit and the
+/// share sheet inspect the file while building the sheet — type sniffing,
+/// collaboration / "default share mode" lookups (the `-10814` log lines), the
+/// Save Video compatibility check, a QuickLook thumbnail — against a
+/// multi-hundred-MB 3840x1080 movie. That work is UIKit's, so it can't be moved
+/// off the main thread; a promise leaves nothing to inspect up front. The
+/// preview is a stock icon and a title, so presenting costs the same for any
+/// file. The "share.present" interval (TrinetDiagnostics) runs from the tap
+/// until the sheet is on screen, so a slow presentation shows in the perf log.
 enum ShareSheet {
     @MainActor
     static func present(url: URL, title: String) {
+        let iv = TrinetDiagnostics.begin("share.present")
         guard let scene = UIApplication.shared.connectedScenes
                 .compactMap({ $0 as? UIWindowScene })
                 .first(where: { $0.activationState == .foregroundActive })
                 ?? UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first,
               let window = scene.windows.first(where: \.isKeyWindow) ?? scene.windows.first,
-              var top = window.rootViewController else { return }
+              var top = window.rootViewController else { iv.end(); return }
         while let presented = top.presentedViewController { top = presented }
 
-        let item = RecordingShareItem(url: url, title: title)
-        let av = UIActivityViewController(activityItems: [item], applicationActivities: nil)
+        let av = UIActivityViewController(
+            activityItemsConfiguration: RecordingShareItem.configuration(url: url, title: title))
+        av.completionWithItemsHandler = { activity, completed, _, error in
+            let detail = "\(activity?.rawValue ?? "dismissed") completed=\(completed)"
+                + (error.map { " error=\($0.localizedDescription)" } ?? "")
+            TrinetDiagnostics.event("share.done", detail)
+        }
         if let pop = av.popoverPresentationController {   // iPad
             pop.sourceView = top.view
             pop.sourceRect = CGRect(x: top.view.bounds.midX, y: top.view.bounds.maxY - 1,
                                     width: 0, height: 0)
             pop.permittedArrowDirections = []
         }
-        top.present(av, animated: true)
+        top.present(av, animated: true) { iv.end() }
     }
 }
 
-private final class RecordingShareItem: NSObject, UIActivityItemSource {
-    let url: URL
-    let title: String
-    init(url: URL, title: String) { self.url = url; self.title = title }
-
-    func activityViewControllerPlaceholderItem(_ c: UIActivityViewController) -> Any { url }
-    func activityViewController(_ c: UIActivityViewController,
-                                itemForActivityType type: UIActivity.ActivityType?) -> Any? { url }
-    func activityViewController(_ c: UIActivityViewController,
-                                subjectForActivityType type: UIActivity.ActivityType?) -> String { title }
-
-    // Declare the type explicitly so the share sheet does NOT open the FHD .mp4
-    // to sniff it (that file-open — slow/failing on this dev-signed install — is
-    // the "couldn't be opened" churn that hangs the sheet).
-    func activityViewController(_ c: UIActivityViewController,
-                                dataTypeIdentifierForActivityType type: UIActivity.ActivityType?) -> String {
-        UTType.mpeg4Movie.identifier   // "public.mpeg-4"
+private enum RecordingShareItem {
+    @MainActor
+    static func configuration(url: URL, title: String) -> UIActivityItemsConfiguration {
+        let provider = NSItemProvider()
+        provider.suggestedName = url.deletingPathExtension().lastPathComponent
+        // Lazily supplied: called only once an activity needs the bytes, off
+        // the main thread. Not open-in-place, so the receiver gets its own copy
+        // (an APFS clone on the same volume).
+        provider.registerFileRepresentation(forTypeIdentifier: UTType.mpeg4Movie.identifier,
+                                            fileOptions: [], visibility: .all) { completion in
+            completion(url, false, nil)
+            return nil
+        }
+        let config = UIActivityItemsConfiguration(itemProviders: [provider])
+        config.perItemMetadataProvider = { _, key in
+            switch key {
+            case .title:
+                return title
+            case .linkPresentationMetadata:
+                // Title + stock icon; no originalURL / imageProvider, so nothing
+                // tries to thumbnail the movie.
+                let md = LPLinkMetadata()
+                md.title = title
+                md.iconProvider = iconProvider()
+                return md
+            default:
+                return nil
+            }
+        }
+        config.previewProvider = { _, _, _ in iconProvider() }
+        return config
     }
 
-    // Title-only metadata (no imageProvider) → the share sheet skips the
-    // QuickLook thumbnail of the FHD .mp4 entirely, so it presents instantly.
-    func activityViewControllerLinkMetadata(_ c: UIActivityViewController) -> LPLinkMetadata? {
-        let md = LPLinkMetadata()
-        md.title = title
-        md.originalURL = url
-        return md
+    private static func iconProvider() -> NSItemProvider? {
+        UIImage(systemName: "film").map { NSItemProvider(object: $0) }
     }
 }
